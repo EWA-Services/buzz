@@ -16,6 +16,7 @@ import {
   getInboxItemConversationId,
 } from "@/features/home/lib/inbox";
 import { useInboxSelectionAnchor } from "@/features/home/useInboxSelectionAnchor";
+import { useInboxEditMessage } from "@/features/home/useInboxEditMessage";
 import { useOwnedAgentPubkeys } from "@/features/home/useOwnedAgentPubkeys";
 import {
   filterInboxItems,
@@ -167,6 +168,7 @@ export function HomeView({
   );
   const { goChannel } = useAppNavigation();
   const openDmMutation = useOpenDmMutation();
+  const openDm = openDmMutation.mutateAsync;
   const handleUserSelectItem = React.useCallback(
     (itemId: string | null) => {
       setAutoSelectedEventId(null);
@@ -212,10 +214,10 @@ export function HomeView({
   const [isSendingReply, setIsSendingReply] = React.useState(false);
   const handleOpenDm = React.useCallback(
     async (pubkeys: string[]) => {
-      const dm = await openDmMutation.mutateAsync({ pubkeys });
+      const dm = await openDm({ pubkeys });
       await goChannel(dm.id);
     },
-    [goChannel, openDmMutation],
+    [goChannel, openDm],
   );
   const { activeReminderEventIds, openReminder } = useRemindLater();
   const [localRepliesByItemId, setLocalRepliesByItemId] = React.useState<
@@ -300,6 +302,10 @@ export function HomeView({
       hasChannelLoadError: channelMessagesQuery.isError,
       isChannelLoading: channelMessagesQuery.isPending,
     },
+  );
+  const { editMessage, isEditingMessage } = useInboxEditMessage(
+    selectedChannel,
+    threadContext.refreshStructuralEvents,
   );
 
   const feedProfilePubkeys = React.useMemo(
@@ -460,6 +466,7 @@ export function HomeView({
     selectedChannel,
     selectedEventId,
     selectedItem,
+    structuralEvents: threadContext.structuralEvents,
   });
   const selectedItemReplies = React.useMemo<InboxReply[]>(() => {
     if (!selectedItem) return [];
@@ -745,6 +752,7 @@ export function HomeView({
               currentPubkey={currentPubkey}
               disabledReplyReason={disabledReplyReason}
               isDeletingMessage={isDeletingMessage}
+              isEditingMessage={isEditingMessage}
               isSendingReply={isSendingReply}
               isSinglePanelView={isSinglePanelDetailView}
               hasThreadContextLoadError={threadContext.hasLoadError}
@@ -784,6 +792,7 @@ export function HomeView({
                 handleCloseProfilePanel();
                 setManagedChannelId(channelId);
               }}
+              onEditSave={editMessage}
               onOpenContext={onOpenContext}
               onSendReply={async ({
                 content,
