@@ -1,11 +1,6 @@
 import * as React from "react";
 
 import { reportChannelBotTyping } from "@/features/agents/agentWorkingSignal";
-// DEBUG HARNESS (remove): see desktop/src/features/agents/debug/README.md
-import {
-  useDebugHarnessRelayAgents,
-  useDebugHarnessTypingEntries,
-} from "@/features/agents/debug/debugAgentHarness";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type {
@@ -53,29 +48,14 @@ export function useChannelActivityTyping({
   relayAgents: RelayAgent[];
   typingEntries: TypingIndicatorEntry[];
 }) {
-  // DEBUG HARNESS (remove): appends two synthetic debug agents to the relay
-  // roster and reports the viewed channel to the harness. Restore by deleting
-  // these lines and passing `relayAgents` directly below.
-  const relayAgentsWithDebug = useDebugHarnessRelayAgents(
-    relayAgents,
-    activeChannelId,
-  );
-  // DEBUG HARNESS (remove): appends synthetic channel-scoped typing entries
-  // for slots with the "Typing" toggle on, exercising the typing-fallback
-  // working path. Restore by deleting these lines and using `typingEntries`
-  // directly below.
-  const typingEntriesWithDebug = useDebugHarnessTypingEntries(
-    typingEntries,
-    activeChannelId,
-  );
   const agentCandidates = React.useMemo(
     () =>
       buildChannelAgentSessionCandidates({
         channelMembers,
         managedAgents,
-        relayAgents: relayAgentsWithDebug,
+        relayAgents,
       }),
-    [channelMembers, managedAgents, relayAgentsWithDebug],
+    [channelMembers, managedAgents, relayAgents],
   );
   const channelAgentSessionAgents = React.useMemo(
     () =>
@@ -96,14 +76,14 @@ export function useChannelActivityTyping({
   );
   const threadTypingPubkeys = React.useMemo(
     () =>
-      typingEntriesWithDebug
+      typingEntries
         .filter(
           (entry) =>
             entry.threadHeadId === openThreadHeadId &&
             !channelAgentPubkeys.has(normalizePubkey(entry.pubkey)),
         )
         .map((entry) => entry.pubkey),
-    [channelAgentPubkeys, openThreadHeadId, typingEntriesWithDebug],
+    [channelAgentPubkeys, openThreadHeadId, typingEntries],
   );
   const { botTypingEntries, humanTypingPubkeys } = React.useMemo<{
     botTypingEntries: TypingIndicatorEntry[];
@@ -111,7 +91,7 @@ export function useChannelActivityTyping({
   }>(() => {
     const botTypingEntries: TypingIndicatorEntry[] = [];
     const humanTypingPubkeys: string[] = [];
-    for (const entry of typingEntriesWithDebug) {
+    for (const entry of typingEntries) {
       if (channelAgentPubkeys.has(normalizePubkey(entry.pubkey))) {
         botTypingEntries.push(entry);
       } else if (entry.threadHeadId === null) {
@@ -119,7 +99,7 @@ export function useChannelActivityTyping({
       }
     }
     return { botTypingEntries, humanTypingPubkeys };
-  }, [channelAgentPubkeys, typingEntriesWithDebug]);
+  }, [channelAgentPubkeys, typingEntries]);
 
   // Mirror bot typing into the unified working signal so surfaces that read
   // agentWorkingSignal (sidebar badges, activity panel, composer bar) get the
