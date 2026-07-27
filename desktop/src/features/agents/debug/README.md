@@ -19,9 +19,10 @@ channel currently in view.
   shell commands — one failing, file edit, Buzz relay search, chunked
   assistant message, todo update, usage) so the live-activity transcript and
   per-action pill labels render realistic content. The first frame lands
-  immediately; subsequent frames follow at a randomized 1–6.5s cadence, so
-  gaps occasionally outlast the 6s pill-label decay and exercise the generic
-  "is working…" fallback.
+  immediately; subsequent frames follow at a randomized 1–6.5s cadence — the
+  longer gaps verify the pill HOLDS its last action headline through quiet
+  stretches (the generic "is working…" label only shows before the first
+  frame).
 - **Typing** simulates the basic "is typing" situation: a synthetic
   channel-scoped typing entry (as if a kind-20002 typing indicator arrived)
   with NO observer turn. This exercises the typing-fallback path —

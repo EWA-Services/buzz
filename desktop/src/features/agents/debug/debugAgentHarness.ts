@@ -38,9 +38,10 @@ const DEBUG_AGENT_DEFS: Record<
 const LIVENESS_INTERVAL_MS = 10_000;
 /**
  * Randomized delay range between scripted transcript frames while "Progress"
- * is on (the first frame is emitted immediately on toggle). The max
- * deliberately exceeds ACTIVITY_PILL_STALE_MS (6s) so longer gaps let the
- * pill label decay back to "<name> is working…" mid-stream.
+ * is on (the first frame is emitted immediately on toggle). The longer gaps
+ * exercise the quiet-stretch behavior: the pill label must HOLD the last
+ * action headline (no decay to "<name> is working…") until the next frame
+ * swaps it.
  */
 const PROGRESS_DELAY_MIN_MS = 1_000;
 const PROGRESS_DELAY_MAX_MS = 6_500;
