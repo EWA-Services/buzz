@@ -34,6 +34,8 @@ import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
 } from "@/features/notifications/hooks";
+// DEBUG HARNESS (remove): see desktop/src/features/agents/debug/README.md
+import { DebugHarnessMount } from "@/features/agents/debug/DebugHarnessMount";
 import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
 import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
 import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh";
@@ -974,6 +976,8 @@ export function AppShell() {
                         onOpenChange={setIsSendFeedbackOpen}
                         open={isSendFeedbackOpen}
                       />
+                      {/* DEBUG HARNESS (remove) */}
+                      <DebugHarnessMount />
                     </AppProfilePanelProvider>
                   </SidebarProvider>
                 </div>

@@ -1,6 +1,8 @@
 import * as React from "react";
 
 import { reportChannelBotTyping } from "@/features/agents/agentWorkingSignal";
+// DEBUG HARNESS (remove): see desktop/src/features/agents/debug/README.md
+import { useDebugHarnessRelayAgents } from "@/features/agents/debug/debugAgentHarness";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type {
@@ -48,14 +50,21 @@ export function useChannelActivityTyping({
   relayAgents: RelayAgent[];
   typingEntries: TypingIndicatorEntry[];
 }) {
+  // DEBUG HARNESS (remove): appends two synthetic debug agents to the relay
+  // roster and reports the viewed channel to the harness. Restore by deleting
+  // these lines and passing `relayAgents` directly below.
+  const relayAgentsWithDebug = useDebugHarnessRelayAgents(
+    relayAgents,
+    activeChannelId,
+  );
   const agentCandidates = React.useMemo(
     () =>
       buildChannelAgentSessionCandidates({
         channelMembers,
         managedAgents,
-        relayAgents,
+        relayAgents: relayAgentsWithDebug,
       }),
-    [channelMembers, managedAgents, relayAgents],
+    [channelMembers, managedAgents, relayAgentsWithDebug],
   );
   const channelAgentSessionAgents = React.useMemo(
     () =>
