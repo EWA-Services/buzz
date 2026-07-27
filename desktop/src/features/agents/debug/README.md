@@ -20,10 +20,13 @@ streaming progress in the channel currently in view.
 - **Typing** simulates the basic "is typing" situation: a synthetic
   channel-scoped typing entry (as if a kind-20002 typing indicator arrived)
   with NO observer turn. This exercises the typing-fallback path —
-  `useChannelActivityTyping` → `reportChannelBotTyping` → generic "Working…"
-  pill with an empty transcript. Independent of Working/Progress, so you can
-  also test observer-over-typing precedence by enabling both. Unlike real
-  typing indicators there is no TTL; the entry stays until toggled off.
+  `useChannelActivityTyping` → `reportChannelBotTyping` →
+  `ChannelComposerActivityRow` diverts typing-only agents out of the pill
+  strip and into the combined typing indicator group (humans + agents,
+  overlapping avatars, "X and Y are typing…"). Independent of
+  Working/Progress, so you can also test observer-over-typing precedence by
+  enabling both. Unlike real typing indicators there is no TTL; the entry
+  stays until toggled off.
 - Two synthetic `RelayAgent` entries are appended to the relay-agent roster in
   `useChannelActivityTyping` so the composer activity bar can resolve the
   working pubkeys to named agents.
