@@ -804,7 +804,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                     channel={activeChannel}
                     currentPubkey={currentPubkey}
                     onOpenAgentSession={onOpenAgentSession}
-                    openAgentSessionPubkey={openAgentSessionPubkey}
                     profiles={profiles}
                     typingPubkeys={typingPubkeys}
                   />
@@ -901,7 +900,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                       agents={activityAgents}
                       channelId={activeChannel?.id ?? null}
                       onOpenAgentSession={onOpenAgentSession}
-                      openAgentSessionPubkey={openAgentSessionPubkey}
                       profiles={profiles}
                       workingBotPubkeys={threadComposerBotTypingPubkeys}
                     />

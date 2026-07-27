@@ -1,9 +1,9 @@
 # DEBUG HARNESS — TEMPORARY, NOT FOR RELEASE
 
-A dev-only harness for testing the composer live-activity feature
-(`composerLiveActivity` preview flag) without real agents. It simulates up to
-two synthetic agents ("Alpha Debug" / "Beta Debug") working and/or
-streaming progress in the channel currently in view.
+A dev-only harness for testing the composer live-activity feature without
+real agents. It simulates up to two synthetic agents ("Alpha Debug" /
+"Beta Debug") working and/or streaming progress in the channel currently in
+view.
 
 ## What it does
 
