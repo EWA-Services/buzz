@@ -21,6 +21,7 @@ import {
   emitDebugAgentProgressOnce,
   endAllDebugAgentTurns,
   setDebugAgentProgress,
+  setDebugAgentTyping,
   setDebugAgentWorking,
   useDebugAgentHarness,
 } from "./debugAgentHarness";
@@ -36,6 +37,8 @@ function SlotControls({
 }) {
   const workingId = `debug-agent-${slot}-working`;
   const progressId = `debug-agent-${slot}-progress`;
+  const typingId = `debug-agent-${slot}-typing`;
+  const active = state.working || state.typing;
   return (
     <div className="rounded-md border border-border/60 px-2.5 py-2">
       <div className="flex items-center gap-1.5">
@@ -43,9 +46,7 @@ function SlotControls({
           aria-hidden
           className={cn(
             "h-1.5 w-1.5 shrink-0 rounded-full",
-            state.working
-              ? "animate-pulse bg-green-500"
-              : "bg-muted-foreground/40",
+            active ? "animate-pulse bg-green-500" : "bg-muted-foreground/40",
           )}
         />
         <span className="min-w-0 flex-1 truncate text-xs font-medium">
@@ -61,7 +62,7 @@ function SlotControls({
           Emit once
         </Button>
       </div>
-      <div className="mt-2 flex items-center gap-4">
+      <div className="mt-2 flex items-center gap-3">
         <label
           className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
           htmlFor={workingId}
@@ -86,6 +87,18 @@ function SlotControls({
           />
           Progress
         </label>
+        <label
+          className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+          htmlFor={typingId}
+        >
+          <Switch
+            checked={state.typing}
+            disabled={!canStart && !state.typing}
+            id={typingId}
+            onCheckedChange={(on) => setDebugAgentTyping(slot, on)}
+          />
+          Typing
+        </label>
       </div>
     </div>
   );
@@ -104,7 +117,7 @@ export function AgentActivityDebugPanel() {
   }
 
   const anyWorking = DEBUG_AGENT_SLOTS.some(
-    (slot) => harness.slots[slot].working,
+    (slot) => harness.slots[slot].working || harness.slots[slot].typing,
   );
   const canStart = harness.activeChannelId !== null;
 

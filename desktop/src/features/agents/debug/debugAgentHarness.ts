@@ -15,6 +15,7 @@ import * as React from "react";
 import { syncAgentTurnsFromEvents } from "@/features/agents/activeAgentTurnsStore";
 import { injectObserverEventsForE2E } from "@/features/agents/observerRelayStore";
 import type { ObserverEvent } from "@/features/agents/ui/agentSessionTypes";
+import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { RelayAgent } from "@/shared/api/types";
 
 export type DebugAgentSlotId = "a" | "b";
@@ -42,8 +43,16 @@ export type DebugAgentSlotState = {
   name: string;
   working: boolean;
   progress: boolean;
+  /**
+   * Basic "is typing" simulation: a synthetic typing-indicator entry with NO
+   * observer turn, exercising the typing-fallback path
+   * (useChannelActivityTyping → reportChannelBotTyping → generic pill).
+   */
+  typing: boolean;
   /** Channel the current turn targets (captured when Working toggled on). */
   channelId: string | null;
+  /** Channel the typing entry targets (captured when Typing toggled on). */
+  typingChannelId: string | null;
 };
 
 export type DebugHarnessSnapshot = {
@@ -91,14 +100,18 @@ const slotStates: Record<DebugAgentSlotId, DebugAgentSlotState> = {
     name: DEBUG_AGENT_DEFS.a.name,
     working: false,
     progress: false,
+    typing: false,
     channelId: null,
+    typingChannelId: null,
   },
   b: {
     pubkey: DEBUG_AGENT_DEFS.b.pubkey,
     name: DEBUG_AGENT_DEFS.b.name,
     working: false,
     progress: false,
+    typing: false,
     channelId: null,
+    typingChannelId: null,
   },
 };
 
@@ -377,10 +390,34 @@ export function emitDebugAgentProgressOnce(slot: DebugAgentSlotId) {
   emitNextProgressFrame(slot);
 }
 
-/** Ends every running debug turn (both slots). */
+/**
+ * Toggle a slot's basic "is typing" simulation: while on, a synthetic
+ * channel-scoped typing entry is appended in useChannelActivityTyping (see
+ * useDebugHarnessTypingEntries), driving the typing-fallback working path
+ * WITHOUT any observer turn or transcript. Independent of Working/Progress —
+ * turn both on to test observer-over-typing precedence. Unlike real typing
+ * indicators there is no TTL; the entry stays until toggled off.
+ */
+export function setDebugAgentTyping(slot: DebugAgentSlotId, on: boolean) {
+  const state = slotStates[slot];
+  if (state.typing === on) return;
+
+  if (on) {
+    if (!activeChannelId) return;
+    state.typing = true;
+    state.typingChannelId = activeChannelId;
+  } else {
+    state.typing = false;
+    state.typingChannelId = null;
+  }
+  notify();
+}
+
+/** Ends every running debug turn and typing simulation (both slots). */
 export function endAllDebugAgentTurns() {
   for (const slot of DEBUG_AGENT_SLOTS) {
     setDebugAgentWorking(slot, false);
+    setDebugAgentTyping(slot, false);
   }
 }
 
@@ -439,4 +476,30 @@ export function useDebugHarnessRelayAgents(
     if (debugAgents.length === 0) return base;
     return [...base, ...debugAgents];
   }, [relayAgents, debugAgents]);
+}
+
+/**
+ * DEBUG HARNESS hook for useChannelActivityTyping: appends a synthetic
+ * channel-scoped typing entry (threadHeadId: null) for each slot with Typing
+ * on in the viewed channel, simulating a bare kind-20002 typing indicator so
+ * the typing-fallback pipeline can be tested without an agent. Returns the
+ * input array unchanged (same reference) when nothing is simulated.
+ */
+export function useDebugHarnessTypingEntries(
+  typingEntries: TypingIndicatorEntry[],
+  channelId: string | null,
+): TypingIndicatorEntry[] {
+  const harness = useDebugAgentHarness();
+  return React.useMemo(() => {
+    if (!import.meta.env.DEV || !channelId) return typingEntries;
+    const debugEntries: TypingIndicatorEntry[] = [];
+    for (const slot of DEBUG_AGENT_SLOTS) {
+      const state = harness.slots[slot];
+      if (state.typing && state.typingChannelId === channelId) {
+        debugEntries.push({ pubkey: state.pubkey, threadHeadId: null });
+      }
+    }
+    if (debugEntries.length === 0) return typingEntries;
+    return [...typingEntries, ...debugEntries];
+  }, [typingEntries, channelId, harness]);
 }
