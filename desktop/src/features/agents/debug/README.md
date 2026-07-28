@@ -27,12 +27,17 @@ channel currently in view.
   channel-scoped typing entry (as if a kind-20002 typing indicator arrived)
   with NO observer turn. This exercises the typing-fallback path —
   `useChannelActivityTyping` → `reportChannelBotTyping` →
-  `ChannelComposerActivityRow` diverts typing-only agents out of the pill
-  strip and into the combined typing indicator group (humans + agents,
-  overlapping avatars, "X and Y are typing…"). Independent of
-  Working/Progress, so you can also test observer-over-typing precedence by
-  enabling both. Unlike real typing indicators there is no TTL; the entry
-  stays until toggled off.
+  `ChannelComposerActivityRow` diverts typing agents with no headline-able
+  transcript for the channel out of the pill strip and into the combined
+  typing indicator group (humans + agents, overlapping avatars, "X and Y
+  are typing…"). Independent of Working/Progress, so you can also test the
+  typing overrides by combining toggles: Working + Typing relabels the
+  agent's pill to "is typing…" in place (mid-turn), and toggling Working
+  off with Typing still on AFTER Progress streamed real actions keeps the
+  pill through the turn-end gap (capability-based partition —
+  `partitionComposerWorkingAgents`) instead of demoting to the group.
+  Unlike real typing indicators there is no TTL; the entry stays until
+  toggled off.
 - Three synthetic `RelayAgent` entries are appended to the relay-agent roster
   in `useChannelActivityTyping` so the composer activity bar can resolve the
   working pubkeys to named agents.
