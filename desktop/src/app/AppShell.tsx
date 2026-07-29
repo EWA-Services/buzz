@@ -754,7 +754,7 @@ export function AppShell() {
                         communitiesHook.activeCommunity?.id ?? null
                       }
                       onAddCommunity={addCommunityDialog.openDialog}
-                      onRemoveCommunity={(id) => void handleRemoveCommunity(id)}
+                      onRemoveCommunity={handleRemoveCommunity}
                       onReorderCommunities={communitiesHook.reorderCommunities}
                       onSwitchCommunity={handleSwitchCommunity}
                       onUpdateCommunity={communitiesHook.updateCommunity}
@@ -853,9 +853,7 @@ export function AppShell() {
                             onOpenAddCommunity={addCommunityDialog.openDialog}
                             onSendFeedback={() => setIsSendFeedbackOpen(true)}
                             onUpdateCommunity={communitiesHook.updateCommunity}
-                            onRemoveCommunity={(id) =>
-                              void handleRemoveCommunity(id)
-                            }
+                            onRemoveCommunity={handleRemoveCommunity}
                             onSwitchCommunity={handleSwitchCommunity}
                             onCreateAgent={() => requestOpenCreateAgent()}
                             selfPresenceStatus={presenceSession.currentStatus}
