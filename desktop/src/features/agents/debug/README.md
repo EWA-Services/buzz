@@ -53,8 +53,9 @@ Everything is marked with the string `DEBUG HARNESS`. To rip it out:
    `buildChannelAgentSessionCandidates` again), and the
    `typingEntriesWithDebug` block (using `typingEntries` directly again) —
    restoring both in the memo deps.
-3. `desktop/src/app/AppShell.tsx` — remove the `DebugHarnessMount` import and
-   its one-line JSX mount.
+3. `desktop/src/app/routes/root.tsx` — remove the `DebugHarnessMount` import
+   and its JSX mount, restoring `component: AppShell` as the root route
+   component.
 
 Verify nothing is left:
 

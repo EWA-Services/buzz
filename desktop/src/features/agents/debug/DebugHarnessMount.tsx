@@ -2,7 +2,7 @@
 // DEBUG HARNESS — TEMPORARY CODE. NOT FOR RELEASE.
 //
 // Self-gating mount for the floating debug panel. Statically imported from
-// AppShell.tsx so the call site stays one line; the panel itself is loaded
+// routes/root.tsx so the call site stays small; the panel itself is loaded
 // lazily and only in dev builds — with `import.meta.env.DEV` inlined to false
 // at build time, the dynamic import below is dead code and no production
 // chunk is emitted for the panel or the harness.
