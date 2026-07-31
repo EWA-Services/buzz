@@ -155,7 +155,7 @@ pub struct AcpClient {
     /// a `cancelled` outcome before the agent returns from `session/prompt`.
     pending_permission_id: Option<serde_json::Value>,
     /// Whether we have already sent a response to the pending permission request.
-    /// Guards against double-response if a timeout fires after the allow_once
+    /// Guards against double-response if a timeout fires after the rejection
     /// response was written but before `pending_permission_id` was cleared.
     permission_responded: bool,
     /// The JSON-RPC id of the most recently sent `session/prompt` request.
@@ -1162,7 +1162,8 @@ impl AcpClient {
     ///
     /// While waiting, handles:
     /// - `session/update` notifications → logged via tracing
-    /// - `session/request_permission` requests → auto-approved with `allow_once`
+    /// - `session/request_permission` requests → rejected unless an owner has
+    ///   already selected a non-interactive permission mode at session setup
     /// - Any other messages → debug-logged and ignored; if they carry an `id`
     ///   (i.e. they are requests, not notifications), a JSON-RPC -32601 error is sent.
     ///
@@ -1870,12 +1871,12 @@ impl AcpClient {
         }
     }
 
-    /// Auto-approve a `session/request_permission` request from the agent.
+    /// Reject a `session/request_permission` request from the agent.
     ///
-    /// Finds the option with `kind == "allow_once"` and responds with its `optionId`.
-    /// If no `allow_once` option exists, falls back to `reject_once`.
-    ///
-    /// **Critical:** Never hardcode `optionId` — always find it dynamically by `kind`.
+    /// Buzz has no human permission prompt in this harness, so selecting
+    /// `allow_once` would turn any admitted prompt into an implicit approval.
+    /// Find `reject_once` by kind when the adapter offers it; otherwise use the
+    /// protocol's cancelled outcome, which is also fail-closed.
     ///
     /// The request `id` is stored as `serde_json::Value` to support both numeric
     /// and string IDs per JSON-RPC 2.0.
@@ -1901,39 +1902,25 @@ impl AcpClient {
             options.len()
         );
 
-        // Find allow_once by kind — NEVER hardcode optionId.
-        let allow_once = options
+        let reject_once = options
             .iter()
-            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
 
-        let response = if let Some(opt) = allow_once {
+        let response = if let Some(opt) = reject_once {
             let option_id = opt["optionId"]
                 .as_str()
-                .ok_or_else(|| AcpError::Protocol("allow_once option missing optionId".into()))?;
+                .ok_or_else(|| AcpError::Protocol("reject_once option missing optionId".into()))?;
             tracing::info!(
                 target: "acp::permission",
-                "auto-approving permission id={id} with allow_once optionId={option_id:?}"
+                "rejecting permission id={id} with reject_once optionId={option_id:?}"
             );
             permission_response_selected(&id, option_id)
         } else {
-            // No allow_once — fall back to reject_once.
             tracing::warn!(
                 target: "acp::permission",
-                "no allow_once option found in permission request id={id}, falling back to reject_once"
+                "no reject_once option found in permission request id={id}, cancelling"
             );
-            let reject = options
-                .iter()
-                .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
-
-            if let Some(opt) = reject {
-                let option_id = opt["optionId"].as_str().unwrap_or("reject");
-                permission_response_selected(&id, option_id)
-            } else {
-                return Err(AcpError::Protocol(
-                    "no suitable permission option found (neither allow_once nor reject_once)"
-                        .into(),
-                ));
-            }
+            permission_response_cancelled(&id)
         };
 
         // Write the response first, then mark as responded.
@@ -2301,8 +2288,7 @@ mod tests {
     }
 
     #[test]
-    fn find_allow_once_by_kind_not_by_option_id() {
-        // optionId values are intentionally non-obvious to prove we don't hardcode them.
+    fn permission_requests_select_reject_once_not_allow_once() {
         let options: Vec<serde_json::Value> = serde_json::from_str(
             r#"[
             {"optionId": "opt-reject-42",  "name": "Reject",       "kind": "reject_once"},
@@ -2312,15 +2298,13 @@ mod tests {
         )
         .unwrap();
 
-        let allow_once = options
+        let reject_once = options
             .iter()
-            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
 
-        assert!(allow_once.is_some(), "should find allow_once option");
-        let opt = allow_once.unwrap();
-        // Found by kind, not by hardcoded optionId
-        assert_eq!(opt["kind"].as_str(), Some("allow_once"));
-        assert_eq!(opt["optionId"].as_str(), Some("opt-allow-99"));
+        let opt = reject_once.expect("should find reject_once option");
+        assert_eq!(opt["kind"].as_str(), Some("reject_once"));
+        assert_eq!(opt["optionId"].as_str(), Some("opt-reject-42"));
     }
 
     #[test]
@@ -2341,16 +2325,11 @@ mod tests {
     }
 
     #[test]
-    fn find_reject_once_fallback_when_no_allow_once() {
+    fn find_reject_once_by_kind() {
         let options: Vec<serde_json::Value> = serde_json::from_str(
             r#"[{"optionId": "rej-x", "name": "Reject", "kind": "reject_once"}]"#,
         )
         .unwrap();
-
-        let allow_once = options
-            .iter()
-            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
-        assert!(allow_once.is_none());
 
         let reject_once = options
             .iter()

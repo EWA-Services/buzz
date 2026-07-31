@@ -432,13 +432,12 @@ pub struct CliArgs {
     /// Permission mode for agents that support `session/set_config_option`
     /// with `configId: "mode"` (e.g. `claude-agent-acp`).
     ///
-    /// Defaults to `bypassPermissions` which skips the per-tool-call
-    /// permission flow. Set to `default` to restore the agent's built-in
-    /// behaviour.
+    /// Defaults to `dontAsk`, which rejects operations that need interactive
+    /// approval because Buzz does not expose a human permission prompt.
     #[arg(
         long,
         env = "BUZZ_ACP_PERMISSION_MODE",
-        default_value = "bypass-permissions",
+        default_value = "dont-ask",
         value_enum
     )]
     pub permission_mode: PermissionMode,
@@ -1469,7 +1468,7 @@ mod tests {
             memory_enabled: true,
             model: None,
             session_title: None,
-            permission_mode: PermissionMode::BypassPermissions,
+            permission_mode: PermissionMode::DontAsk,
             respond_to: RespondTo::Anyone,
             respond_to_allowlist: HashSet::new(),
             allowed_respond_to: Vec::new(),
@@ -2319,9 +2318,9 @@ channels = "ALL"
     }
 
     #[test]
-    fn test_default_config_uses_bypass_permissions() {
+    fn test_default_config_rejects_interactive_permissions() {
         let config = test_config(SubscribeMode::Mentions);
-        assert_eq!(config.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(config.permission_mode, PermissionMode::DontAsk);
     }
 
     #[test]
