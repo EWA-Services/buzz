@@ -224,7 +224,36 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
             return Err((StatusCode::FORBIDDEN, "restricted: not a relay member").into_response());
         }
 
+        // Git runs outside the WebSocket authentication path, so an existing
+        // NIP-98 credential and channel membership are not enough. Re-check
+        // the durable community ban on every Git HTTP request and fail closed
+        // if the restriction store is unavailable.
+        match state
+            .db
+            .moderation_restriction_state(tenant.community(), pubkey.as_bytes())
+            .await
+        {
+            Ok(restriction) => enforce_git_ban(&restriction).map_err(|status| {
+                warn!(pubkey = %pubkey.to_hex(), "git: community ban denied request");
+                (status, "blocked: banned from this community").into_response()
+            })?,
+            Err(error) => {
+                warn!(pubkey = %pubkey.to_hex(), error = %error, "git: ban lookup failed closed");
+                return Err(
+                    (StatusCode::SERVICE_UNAVAILABLE, "authorization unavailable").into_response(),
+                );
+            }
+        }
+
         Ok(GitAuth { pubkey, tenant })
+    }
+}
+
+fn enforce_git_ban(restriction: &buzz_db::moderation::RestrictionState) -> Result<(), StatusCode> {
+    if restriction.banned {
+        Err(StatusCode::FORBIDDEN)
+    } else {
+        Ok(())
     }
 }
 
@@ -2608,6 +2637,26 @@ mod sec005_read_gate_tests {
             "unrecognized role must deny (fail-closed)"
         );
         assert!(!read_role_allows(Some("")), "empty role must deny");
+    }
+
+    #[test]
+    fn durable_ban_denies_git_even_with_otherwise_valid_auth() {
+        let restriction = buzz_db::moderation::RestrictionState {
+            banned: true,
+            muted_until: None,
+        };
+
+        assert_eq!(enforce_git_ban(&restriction), Err(StatusCode::FORBIDDEN));
+    }
+
+    #[test]
+    fn timeout_without_ban_does_not_revoke_git_access() {
+        let restriction = buzz_db::moderation::RestrictionState {
+            banned: false,
+            muted_until: Some(chrono::Utc::now()),
+        };
+
+        assert_eq!(enforce_git_ban(&restriction), Ok(()));
     }
 
     fn announcement(keys: &Keys, tags: Vec<Tag>) -> nostr::Event {
