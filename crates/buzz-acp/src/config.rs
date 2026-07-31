@@ -116,7 +116,6 @@ impl std::fmt::Display for RespondTo {
 ///
 /// - `default` — agent's built-in behaviour (permission requests per tool call).
 /// - `acceptEdits` — auto-approve file edits, still ask for other tools.
-/// - `bypassPermissions` — skip the permission flow entirely.
 /// - `dontAsk` — never prompt; reject anything that would require permission.
 /// - `plan` — planning-only mode (no tool execution).
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
@@ -127,9 +126,6 @@ pub enum PermissionMode {
     /// Auto-approve file edits, still ask for other tools.
     #[value(alias = "acceptEdits")]
     AcceptEdits,
-    /// Skip the permission flow entirely.
-    #[value(alias = "bypassPermissions")]
-    BypassPermissions,
     /// Never prompt; reject anything that would require permission.
     #[value(alias = "dontAsk")]
     DontAsk,
@@ -145,7 +141,6 @@ impl PermissionMode {
         match self {
             Self::Default => "default",
             Self::AcceptEdits => "acceptEdits",
-            Self::BypassPermissions => "bypassPermissions",
             Self::DontAsk => "dontAsk",
             Self::Plan => "plan",
         }
@@ -2269,10 +2264,6 @@ channels = "ALL"
     fn test_permission_mode_wire_strings() {
         assert_eq!(PermissionMode::Default.as_wire_str(), "default");
         assert_eq!(PermissionMode::AcceptEdits.as_wire_str(), "acceptEdits");
-        assert_eq!(
-            PermissionMode::BypassPermissions.as_wire_str(),
-            "bypassPermissions"
-        );
         assert_eq!(PermissionMode::DontAsk.as_wire_str(), "dontAsk");
         assert_eq!(PermissionMode::Plan.as_wire_str(), "plan");
     }
@@ -2280,7 +2271,6 @@ channels = "ALL"
     #[test]
     fn test_permission_mode_is_default() {
         assert!(PermissionMode::Default.is_default());
-        assert!(!PermissionMode::BypassPermissions.is_default());
         assert!(!PermissionMode::AcceptEdits.is_default());
         assert!(!PermissionMode::DontAsk.is_default());
         assert!(!PermissionMode::Plan.is_default());
@@ -2288,20 +2278,17 @@ channels = "ALL"
 
     #[test]
     fn test_permission_mode_display() {
-        assert_eq!(
-            format!("{}", PermissionMode::BypassPermissions),
-            "bypassPermissions"
-        );
+        assert_eq!(format!("{}", PermissionMode::DontAsk), "dontAsk");
         assert_eq!(format!("{}", PermissionMode::Default), "default");
     }
 
     #[test]
     fn test_summary_includes_permission_mode() {
         let mut config = test_config(SubscribeMode::Mentions);
-        config.permission_mode = PermissionMode::BypassPermissions;
+        config.permission_mode = PermissionMode::DontAsk;
         let s = config.summary();
         assert!(
-            s.contains("permission_mode=bypassPermissions"),
+            s.contains("permission_mode=dontAsk"),
             "summary should include permission_mode, got: {s}"
         );
     }
@@ -2331,7 +2318,6 @@ channels = "ALL"
         let cases = [
             ("default", PermissionMode::Default),
             ("accept-edits", PermissionMode::AcceptEdits),
-            ("bypass-permissions", PermissionMode::BypassPermissions),
             ("dont-ask", PermissionMode::DontAsk),
             ("plan", PermissionMode::Plan),
         ];
@@ -2346,14 +2332,12 @@ channels = "ALL"
 
     #[test]
     fn test_permission_mode_value_enum_camel_case_aliases() {
-        // Operators may set env vars using the camelCase wire-format strings
-        // (e.g. BUZZ_ACP_PERMISSION_MODE=bypassPermissions). The #[value(alias)]
-        // attributes ensure these parse correctly.
+        // Operators may set env vars using the camelCase wire-format strings.
+        // The #[value(alias)] attributes ensure these parse correctly.
         use clap::ValueEnum;
         let cases = [
             ("default", PermissionMode::Default),
             ("acceptEdits", PermissionMode::AcceptEdits),
-            ("bypassPermissions", PermissionMode::BypassPermissions),
             ("dontAsk", PermissionMode::DontAsk),
             ("plan", PermissionMode::Plan),
         ];
@@ -2362,6 +2346,18 @@ channels = "ALL"
                 PermissionMode::from_str(input, true).unwrap(),
                 *expected,
                 "camelCase alias {input:?} should parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_permission_mode_rejects_unattended_bypass() {
+        use clap::ValueEnum;
+
+        for input in ["bypass-permissions", "bypassPermissions"] {
+            assert!(
+                PermissionMode::from_str(input, true).is_err(),
+                "{input:?} must not disable the ACP permission boundary"
             );
         }
     }
