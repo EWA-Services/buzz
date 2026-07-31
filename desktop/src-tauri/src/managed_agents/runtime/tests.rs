@@ -177,6 +177,7 @@ fn fixture(
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
+        team_catalog_source: None,
         definition_respond_to: None,
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
@@ -298,6 +299,7 @@ fn persona_with_provider(
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
+        team_catalog_source: None,
         env_vars: std::collections::BTreeMap::new(),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -1304,12 +1306,10 @@ fn restart_eligible_false_when_orphan_has_hash_drift() {
 fn restart_eligible_false_when_orphan_has_availability_drift() {
     assert!(!super::restart_eligible(true, false, true));
 }
-
 #[test]
 fn restart_eligible_false_when_orphan_has_no_drift() {
     assert!(!super::restart_eligible(true, false, false));
 }
-
 #[test]
 fn restart_eligible_false_when_non_orphan_has_no_drift() {
     assert!(!super::restart_eligible(false, false, false));

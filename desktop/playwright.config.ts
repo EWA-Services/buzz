@@ -136,6 +136,7 @@ export default defineConfig({
         "**/inline-custom-harness.spec.ts",
         "**/where-to-run-config.spec.ts",
         "**/huddle-transcription.spec.ts",
+        "**/team-catalog-screenshots.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],
@@ -157,6 +158,7 @@ export default defineConfig({
         "**/persona-env-vars.spec.ts",
         "**/persona-sync.spec.ts",
         "**/team-snapshot.spec.ts",
+        "**/team-catalog.spec.ts",
         "**/agents-everywhere.live.spec.ts",
         "**/relay-restart.live.spec.ts",
         "**/parity-ancestor-island.spec.ts",
