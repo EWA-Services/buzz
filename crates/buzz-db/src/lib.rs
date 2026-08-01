@@ -2865,7 +2865,14 @@ impl Db {
         now_secs: i64,
         batch_limit: i64,
     ) -> Result<Vec<event::DueReminder>> {
-        event::query_due_reminders(self.pg_pool()?, now_secs, batch_limit).await
+        match &self.backend {
+            DbBackend::SQLite(pool) => {
+                sqlite::query_due_reminders(pool, now_secs, batch_limit).await
+            }
+            DbBackend::Postgres => {
+                event::query_due_reminders(self.pg_pool()?, now_secs, batch_limit).await
+            }
+        }
     }
 
     /// Atomically claim a due reminder for delivery (cross-pod dedup).
@@ -2875,7 +2882,22 @@ impl Db {
         event_id: &[u8],
         event_created_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
-        event::claim_due_reminder(self.pg_pool()?, community_id, event_id, event_created_at).await
+        match &self.backend {
+            DbBackend::SQLite(pool) => {
+                sqlite::claim_due_reminder_with_stamp(
+                    pool,
+                    community_id,
+                    event_id,
+                    event_created_at,
+                    chrono::Utc::now().timestamp(),
+                )
+                .await
+            }
+            DbBackend::Postgres => {
+                event::claim_due_reminder(self.pg_pool()?, community_id, event_id, event_created_at)
+                    .await
+            }
+        }
     }
 
     /// Atomically claim a due reminder using a caller-supplied delivery stamp.
@@ -2886,14 +2908,28 @@ impl Db {
         event_created_at: chrono::DateTime<chrono::Utc>,
         delivery_stamp: i64,
     ) -> Result<bool> {
-        event::claim_due_reminder_with_stamp(
-            self.pg_pool()?,
-            community_id,
-            event_id,
-            event_created_at,
-            delivery_stamp,
-        )
-        .await
+        match &self.backend {
+            DbBackend::SQLite(pool) => {
+                sqlite::claim_due_reminder_with_stamp(
+                    pool,
+                    community_id,
+                    event_id,
+                    event_created_at,
+                    delivery_stamp,
+                )
+                .await
+            }
+            DbBackend::Postgres => {
+                event::claim_due_reminder_with_stamp(
+                    self.pg_pool()?,
+                    community_id,
+                    event_id,
+                    event_created_at,
+                    delivery_stamp,
+                )
+                .await
+            }
+        }
     }
 
     /// Release a claimed due reminder after a publish failure.
@@ -2904,14 +2940,28 @@ impl Db {
         event_created_at: chrono::DateTime<chrono::Utc>,
         delivery_stamp: i64,
     ) -> Result<bool> {
-        event::release_due_reminder(
-            self.pg_pool()?,
-            community_id,
-            event_id,
-            event_created_at,
-            delivery_stamp,
-        )
-        .await
+        match &self.backend {
+            DbBackend::SQLite(pool) => {
+                sqlite::release_due_reminder(
+                    pool,
+                    community_id,
+                    event_id,
+                    event_created_at,
+                    delivery_stamp,
+                )
+                .await
+            }
+            DbBackend::Postgres => {
+                event::release_due_reminder(
+                    self.pg_pool()?,
+                    community_id,
+                    event_id,
+                    event_created_at,
+                    delivery_stamp,
+                )
+                .await
+            }
+        }
     }
 
     /// Ensure a user record exists (upsert).
