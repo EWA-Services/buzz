@@ -1,8 +1,12 @@
 import * as React from "react";
+import { useAgentAccessOwnerOnlyQuery } from "../hooks";
 import { Input } from "@/shared/ui/input";
 import { cn } from "@/shared/lib/cn";
 import { EnvVarsEditor, type EnvVarsValue } from "./EnvVarsEditor";
-import { CreateAgentRespondToField } from "./RespondToField";
+import {
+  CreateAgentRespondToField,
+  INTERNAL_AGENT_ACCESS_DISABLED_REASON,
+} from "./RespondToField";
 import type { PersonaBehaviorDraft } from "./personaBehaviorDraft";
 import {
   isBuzzAgentRuntime,
@@ -82,6 +86,11 @@ export function PersonaAdvancedFields({
    */
   selectedRuntime?: AcpRuntimeCatalogEntry;
 }) {
+  const { data: agentAccessOwnerOnly = false } = useAgentAccessOwnerOnlyQuery();
+  const respondToMode = agentAccessOwnerOnly
+    ? "owner-only"
+    : (behaviorDraft.respondTo ?? "owner-only");
+
   // Numeric tuning descriptors — gate on catalog status so that loading/error
   // never collapses to "no controls": keys stay visible as generic rows.
   const numericDescriptors = React.useMemo(
@@ -105,9 +114,14 @@ export function PersonaAdvancedFields({
   return (
     <div className="space-y-5 pt-2">
       <CreateAgentRespondToField
-        allowlist={behaviorDraft.respondToAllowlist}
-        disabled={disabled}
-        mode={behaviorDraft.respondTo ?? "owner-only"}
+        allowlist={agentAccessOwnerOnly ? [] : behaviorDraft.respondToAllowlist}
+        disabled={disabled || agentAccessOwnerOnly}
+        disabledReason={
+          agentAccessOwnerOnly
+            ? INTERNAL_AGENT_ACCESS_DISABLED_REASON
+            : undefined
+        }
+        mode={respondToMode}
         onAllowlistChange={(allowlist) =>
           onBehaviorDraftChange({
             ...behaviorDraft,

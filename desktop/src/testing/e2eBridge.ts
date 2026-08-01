@@ -441,6 +441,8 @@ type E2eConfig = {
       model: string | null;
       preferred_runtime?: string | null;
     };
+    /** Explicit internal-distribution marker; independent of baked defaults. */
+    internalBuild?: boolean;
     /** File-layer config returned by runtime id. */
     runtimeFileConfigs?: Record<string, RuntimeFileConfigSubset | null>;
     /** Baked build env returned by the display and key-name Tauri commands. */
@@ -11771,6 +11773,8 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "get_baked_build_env_keys":
         return (config?.mock?.bakedBuildEnv ?? []).map((entry) => entry.key);
+      case "agent_access_owner_only":
+        return config?.mock?.internalBuild ?? false;
       case "update_managed_agent":
         return handleUpdateManagedAgent(
           payload as Parameters<typeof handleUpdateManagedAgent>[0],
