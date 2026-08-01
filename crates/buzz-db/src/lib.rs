@@ -5106,6 +5106,9 @@ impl Db {
 
     /// Check if a pubkey is in the allowlist for `community`.
     pub async fn is_pubkey_allowed(&self, community: CommunityId, pubkey: &[u8]) -> Result<bool> {
+        if let DbBackend::SQLite(pool) = &self.backend {
+            return sqlite::is_pubkey_allowed(pool, community, pubkey).await;
+        }
         let row = sqlx::query(
             "SELECT COUNT(*) as cnt FROM pubkey_allowlist WHERE community_id = $1 AND pubkey = $2",
         )
@@ -5119,6 +5122,9 @@ impl Db {
 
     /// Check if the community allowlist has any entries (i.e. is enforcement active).
     pub async fn has_allowlist_entries(&self, community: CommunityId) -> Result<bool> {
+        if let DbBackend::SQLite(pool) = &self.backend {
+            return sqlite::has_allowlist_entries(pool, community).await;
+        }
         let row =
             sqlx::query("SELECT COUNT(*) as cnt FROM pubkey_allowlist WHERE community_id = $1")
                 .bind(community.as_uuid())
@@ -5136,6 +5142,9 @@ impl Db {
         added_by: &[u8],
         note: Option<&str>,
     ) -> Result<bool> {
+        if let DbBackend::SQLite(pool) = &self.backend {
+            return sqlite::add_to_allowlist(pool, community, pubkey, added_by, note).await;
+        }
         let result = sqlx::query(
             "INSERT INTO pubkey_allowlist (community_id, pubkey, added_by, note) VALUES ($1, $2, $3, $4) \
              ON CONFLICT DO NOTHING",
@@ -5155,6 +5164,9 @@ impl Db {
         community: CommunityId,
         pubkey: &[u8],
     ) -> Result<bool> {
+        if let DbBackend::SQLite(pool) = &self.backend {
+            return sqlite::remove_from_allowlist(pool, community, pubkey).await;
+        }
         let result =
             sqlx::query("DELETE FROM pubkey_allowlist WHERE community_id = $1 AND pubkey = $2")
                 .bind(community.as_uuid())
@@ -5166,6 +5178,9 @@ impl Db {
 
     /// List all pubkeys in the community allowlist.
     pub async fn list_allowlist(&self, community: CommunityId) -> Result<Vec<AllowlistEntry>> {
+        if let DbBackend::SQLite(pool) = &self.backend {
+            return sqlite::list_allowlist(pool, community).await;
+        }
         let rows = sqlx::query(
             "SELECT pubkey, added_by, added_at, note FROM pubkey_allowlist WHERE community_id = $1 ORDER BY added_at DESC",
         )
