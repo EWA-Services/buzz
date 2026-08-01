@@ -11,6 +11,7 @@ mod huddle;
 mod identity_storage;
 mod key_backup;
 mod linux_media;
+mod local_relay;
 mod managed_agents;
 mod media_proxy;
 #[cfg(feature = "mesh-llm")]
@@ -78,7 +79,6 @@ use tray_menu::show_main_window;
 
 #[cfg(target_os = "macos")]
 const INITIAL_RENDER_READY_EVENT: &str = "initial-render-ready";
-
 fn reveal_initial_window<R: tauri::Runtime>(window: &tauri::Window<R>) {
     if let Err(error) = window.show() {
         eprintln!("buzz-desktop: failed to reveal main window: {error}");
@@ -366,6 +366,7 @@ pub fn run() {
             });
         })
         .manage(build_app_state())
+        .manage(local_relay::RuntimeState::new(None))
         .manage(ClipboardState::new())
         .manage(PendingCommunityDeepLinks::default())
         .manage(BuilderlabSession::default())
@@ -972,9 +973,11 @@ pub fn run() {
             if is_restart_request(code) {
                 restart_requested.store(true, Ordering::SeqCst);
             }
+            local_relay::stop(&app_handle.state::<local_relay::RuntimeState>());
             shut_down_app(app_handle, &run_shutdown_done);
         }
         RunEvent::Exit => {
+            local_relay::stop(&app_handle.state::<local_relay::RuntimeState>());
             shut_down_app(app_handle, &run_shutdown_done);
             app_handle.state::<ClipboardState>().release();
 
