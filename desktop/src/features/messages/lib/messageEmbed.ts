@@ -5,7 +5,6 @@ import { parseMessageLink, type ParsedMessageLink } from "./messageLink";
 const MESSAGE_LINK_PATTERN = /(?:buzz):\/\/message\?[^\s<>"')\]]+/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;:!?]+$/;
 const MAX_MESSAGE_EMBEDS = 4;
-const MAX_EXCERPT_LENGTH = 420;
 
 export type MessageEmbedLink = ParsedMessageLink & { href: string };
 
@@ -77,7 +76,5 @@ export function isMatchingMessageEmbedEvent(
 }
 
 export function messageEmbedExcerpt(content: string): string {
-  const normalized = content.replace(/\s+/g, " ").trim();
-  if (normalized.length <= MAX_EXCERPT_LENGTH) return normalized;
-  return `${normalized.slice(0, MAX_EXCERPT_LENGTH - 1).trimEnd()}…`;
+  return content.replace(/\s+/g, " ").trim();
 }

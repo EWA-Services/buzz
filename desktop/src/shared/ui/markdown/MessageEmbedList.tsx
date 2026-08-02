@@ -29,7 +29,7 @@ export function MessageEmbedList({
 
   return (
     <AttachmentGroup
-      className="max-w-full flex-wrap overflow-visible pb-0"
+      className="w-full max-w-2xl flex-col items-stretch overflow-visible pb-0"
       data-message-embed-list=""
     >
       {links.map((link: MessageEmbedLink) => (

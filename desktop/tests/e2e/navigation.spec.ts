@@ -329,7 +329,7 @@ test("message links to visible root messages open the thread panel", async ({
   const embed = linkMessage.locator('[data-message-embed="resolved"]');
   await expect(embed).toContainText("Welcome to #general");
   await expect(embed).toContainText("#general");
-  await embed.click();
+  await embed.getByRole("button", { name: /Open message by/ }).click();
 
   const threadPanel = page.getByTestId("message-thread-panel");
   await expect(threadPanel).toBeVisible();

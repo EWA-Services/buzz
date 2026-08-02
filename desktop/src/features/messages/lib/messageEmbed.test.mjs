@@ -76,8 +76,7 @@ test("isMatchingMessageEmbedEvent requires both requested id and channel h tag",
   );
 });
 
-test("messageEmbedExcerpt normalizes whitespace and bounds source text", () => {
+test("messageEmbedExcerpt normalizes whitespace without truncating source text", () => {
   assert.equal(messageEmbedExcerpt("hello\n\n  world"), "hello world");
-  assert.equal(messageEmbedExcerpt("x".repeat(500)).length, 420);
-  assert.match(messageEmbedExcerpt("x".repeat(500)), /…$/);
+  assert.equal(messageEmbedExcerpt("x".repeat(500)).length, 500);
 });

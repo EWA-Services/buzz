@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LockKeyhole } from "lucide-react";
+import { ArrowUpRight, LockKeyhole } from "lucide-react";
 
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import {
@@ -40,11 +41,15 @@ export function MessageEmbed({
   // integrity have both been established.
   const profileQuery = useUserProfileQuery(event?.pubkey);
   const profile = profileQuery.data;
+  const excerpt = event
+    ? messageEmbedExcerpt(event.content) || "Message has no text"
+    : "";
+  const [expanded, setExpanded] = useState(false);
 
   if (!canRead || eventQuery.isError || (eventQuery.data && !event)) {
     return (
       <div
-        className="flex w-96 max-w-full items-center gap-3 border-l-[3px] border-border py-1 pl-3 text-muted-foreground/70"
+        className="flex w-full max-w-2xl items-center gap-3 border-l-[3px] border-border py-1 pl-3 text-muted-foreground/70"
         data-message-embed="unavailable"
       >
         <LockKeyhole aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -58,7 +63,7 @@ export function MessageEmbed({
   if (!event) {
     return (
       <div
-        className="w-96 max-w-full animate-pulse border-l-[3px] border-border py-1 pl-3"
+        className="w-full max-w-2xl animate-pulse border-l-[3px] border-border py-1 pl-3"
         data-message-embed="loading"
       >
         <span className="sr-only">Loading message preview</span>
@@ -71,17 +76,13 @@ export function MessageEmbed({
 
   const displayName =
     profile?.displayName?.trim() || truncatePubkey(event.pubkey);
-  const excerpt = messageEmbedExcerpt(event.content) || "Message has no text";
 
   return (
-    <button
-      type="button"
-      aria-label={`Open message by ${displayName} in ${channel?.name ?? "channel"}`}
-      className="group w-96 max-w-full cursor-pointer border-l-[3px] border-border py-1 pl-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    <div
+      className="w-full max-w-2xl border-l-[3px] border-border py-1 pl-3"
       data-message-embed="resolved"
-      onClick={onOpen}
     >
-      <span className="mb-0.5 flex min-w-0 items-center gap-2">
+      <div className="mb-0.5 flex min-w-0 items-center gap-2">
         <UserAvatar
           avatarUrl={profile?.avatarUrl ?? null}
           className="shrink-0"
@@ -98,10 +99,36 @@ export function MessageEmbed({
         <span className="min-w-0 truncate text-xs text-muted-foreground">
           #{channel?.name}
         </span>
-      </span>
-      <span className="line-clamp-3 block text-sm leading-5 text-foreground">
+      </div>
+      <span
+        className={
+          expanded
+            ? "block text-sm leading-5 text-foreground"
+            : "block max-h-[3.75rem] overflow-hidden text-sm leading-5 text-foreground"
+        }
+      >
         {excerpt}
       </span>
-    </button>
+      <div className="mt-1 flex items-center gap-3 text-xs font-medium">
+        {excerpt.length > 240 ? (
+          <button
+            className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => setExpanded((value) => !value)}
+            type="button"
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        ) : null}
+        <button
+          aria-label={`Open message by ${displayName} in ${channel?.name ?? "channel"}`}
+          className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onOpen}
+          type="button"
+        >
+          View message
+          <ArrowUpRight aria-hidden="true" className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
   );
 }
