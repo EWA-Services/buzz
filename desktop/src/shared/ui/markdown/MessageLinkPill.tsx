@@ -29,7 +29,14 @@ export function MessageLinkPill({
   );
 
   if (!interactive || !canRead) {
-    return <span data-message-link="">{label}</span>;
+    return (
+      <span
+        className={cn(!canRead && MENTION_CHIP_BASE_CLASSES)}
+        data-message-link=""
+      >
+        {label}
+      </span>
+    );
   }
 
   return (
