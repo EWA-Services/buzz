@@ -25,7 +25,7 @@ export function MessageLinkPill({
       #{channelLabel} · {shortId}
     </>
   ) : (
-    <>Private message</>
+    <>Private message or channel</>
   );
 
   if (!interactive || !canRead) {
