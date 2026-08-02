@@ -82,6 +82,7 @@ import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
+import { MembershipActivityAvatarDebugToggle } from "./MembershipActivityAvatarDebugToggle";
 const HEADER_ACTIONS_COMPACT_BREAKPOINT_PX = 760,
   EMPTY_RELAY_EVENTS: RelayEvent[] = [];
 export function ChannelScreen({
@@ -262,7 +263,6 @@ export function ChannelScreen({
     resolvedMessages,
     threadReplyEvents,
   );
-
   const messageEventProfilePubkeys = useMessageEventProfilePubkeys(
     resolvedMessages,
     threadReplyEvents,
@@ -688,7 +688,6 @@ export function ChannelScreen({
     threadReplyTargetId,
     threadReplyTargetMessage,
   });
-
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
       openAgentSessionPubkey ||
@@ -722,7 +721,6 @@ export function ChannelScreen({
     resetKey: activeChannelId,
     enabled: !isSinglePanelView,
   });
-
   const handleManageChannel = React.useCallback(() => {
     if (activeChannel?.channelType === "forum") {
       openGlobalChannelManagement();
@@ -991,6 +989,9 @@ export function ChannelScreen({
           onOpenChange={setIsMembersSidebarOpen}
           onViewActivity={handleOpenAgentSession}
           relayUrl={activeCommunity?.relayUrl}
+        />
+        <MembershipActivityAvatarDebugToggle
+          channelType={activeChannel?.channelType}
         />
       </ProfilePanelProvider>
     </AgentSessionProvider>
