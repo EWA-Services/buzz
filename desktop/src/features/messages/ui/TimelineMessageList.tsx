@@ -78,6 +78,7 @@ type TimelineMessageListProps = {
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onReply?: (message: TimelineMessage) => void;
+  onOpenThread?: (message: TimelineMessage) => void;
   isSendingVideoReviewComment?: boolean;
   onSendVideoReviewComment?: (
     message: TimelineMessage,
@@ -143,6 +144,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   onMarkUnread,
   onMarkRead,
   onReply,
+  onOpenThread,
   isSendingVideoReviewComment = false,
   onSendVideoReviewComment,
   onToggleReaction,
@@ -256,6 +258,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               onMarkRead={onMarkRead}
               onMarkUnread={onMarkUnread}
               onReply={onReply}
+              onOpenThread={onOpenThread}
               onToggleReaction={onToggleReaction}
               profiles={profiles}
               searchActiveMessageId={searchActiveMessageId}
@@ -287,6 +290,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       onMarkRead,
       onMarkUnread,
       onReply,
+      onOpenThread,
       onToggleReaction,
       profiles,
       ownerProfiles,
@@ -839,6 +843,7 @@ type MessageRowItemProps = Pick<
   | "onMarkUnread"
   | "onMarkRead"
   | "onReply"
+  | "onOpenThread"
   | "onToggleReaction"
   | "profiles"
   | "searchActiveMessageId"
@@ -877,6 +882,7 @@ function MessageRowItem({
   onMarkUnread,
   onMarkRead,
   onReply,
+  onOpenThread,
   onToggleReaction,
   profiles,
   searchActiveMessageId,
@@ -895,7 +901,7 @@ function MessageRowItem({
   const canDelete = canManage && onDelete ? onDelete : undefined;
   const canEdit = canManage && onEdit ? onEdit : undefined;
 
-  if (summary && onReply) {
+  if (summary && onOpenThread) {
     const isHighlighted = message.id === highlightedMessageId;
     return (
       <div
@@ -930,6 +936,7 @@ function MessageRowItem({
           onMarkUnread={onMarkUnread}
           onToggleReaction={onToggleReaction}
           onReply={onReply}
+          onOpenThread={onOpenThread}
           onUnfollowThread={
             unfollowThreadById
               ? () => unfollowThreadById(message.id)
@@ -942,7 +949,7 @@ function MessageRowItem({
         <MessageThreadSummaryRow
           depth={message.depth}
           message={message}
-          onOpenThread={onReply}
+          onOpenThread={onOpenThread}
           showDepthGuides={false}
           summary={summary}
           summaryIndentOffsetRem={-THREAD_REPLY_ROW_MARGIN_INLINE_REM}
@@ -979,6 +986,7 @@ function MessageRowItem({
         onMarkUnread={onMarkUnread}
         onToggleReaction={onToggleReaction}
         onReply={onReply}
+        onOpenThread={onOpenThread}
         profiles={profiles}
         searchQuery={isSearchMatch ? searchQuery : undefined}
         showDepthGuides={false}
