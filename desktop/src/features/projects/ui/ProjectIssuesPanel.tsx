@@ -22,6 +22,7 @@ import {
   ProjectFeedRowCluster,
   ProjectFeedRowMonoCell,
 } from "./ProjectFeedRow";
+import { ProjectIssueCommentTimeline } from "./ProjectIssueCommentTimeline";
 import { OverviewRailSection } from "./ProjectOverviewPanel";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
@@ -65,29 +66,6 @@ function issueMembers(
         profile?.displayName?.trim() || profile?.nip05Handle?.trim() || null,
     };
   });
-}
-
-function AuthorIdentity({
-  profiles,
-  pubkey,
-  role,
-}: {
-  profiles?: UserProfileLookup;
-  pubkey: string;
-  role?: React.ReactNode;
-}) {
-  const profile = profiles?.[normalizePubkey(pubkey)];
-  return (
-    <ProfileIdentityButton
-      align="center"
-      avatarSize="xs"
-      avatarUrl={profile?.avatarUrl ?? null}
-      isAgent={profile?.isAgent === true}
-      label={resolveUserLabel({ profiles, pubkey })}
-      pubkey={pubkey}
-      role={role}
-    />
-  );
 }
 
 function IssueRow({
@@ -141,10 +119,15 @@ function IssueRow({
       trailing={
         <>
           {issue.comments.length > 0 ? (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <button
+              aria-label={`View ${issue.comments.length} comments`}
+              className="flex items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={onOpen}
+              type="button"
+            >
               <MessageSquare className="h-3.5 w-3.5" />
               {issue.comments.length}
-            </span>
+            </button>
           ) : null}
           <ProjectFeedRowCluster>
             <ProjectFeedRowMonoCell
@@ -228,37 +211,26 @@ export function ProjectIssueDetail({
         </header>
 
         <section className="space-y-3 p-4">
+          <ProjectIssueCommentTimeline
+            comments={issue.comments}
+            key={issue.id}
+            profiles={profiles}
+          />
           <h4 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
             <MessageSquare className="h-3.5 w-3.5" />
             Add Your Comment
           </h4>
-          {issue.comments.length > 0 ? (
-            <div className="space-y-3">
-              {issue.comments.map((item) => (
-                <article key={item.id}>
-                  <div className="mb-2">
-                    <AuthorIdentity
-                      profiles={profiles}
-                      pubkey={item.author}
-                      role={relativeTime(item.createdAt)}
-                    />
-                  </div>
-                  <ProjectRichContent content={item.content} tags={item.tags} />
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No comments yet.</p>
-          )}
-          <ForumComposer
-            className="border border-border/60 bg-background/45"
-            disabled={commentMutation.isPending}
-            isSending={commentMutation.isPending}
-            members={members}
-            onSubmit={handleCommentSubmit}
-            placeholder="Add a comment…"
-            profiles={profiles}
-          />
+          <div data-testid="project-issue-comment-composer">
+            <ForumComposer
+              className="border border-border/60 bg-background/45"
+              disabled={commentMutation.isPending}
+              isSending={commentMutation.isPending}
+              members={members}
+              onSubmit={handleCommentSubmit}
+              placeholder="Add a comment…"
+              profiles={profiles}
+            />
+          </div>
         </section>
       </div>
 

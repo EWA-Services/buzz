@@ -41,7 +41,10 @@ import type {
 } from "@/shared/api/types";
 import { summarizeProjectActivityEvents } from "./projectActivity.mjs";
 import type { ProjectIssue } from "./projectIssues.mjs";
-import { projectIssueEventsToIssues } from "./projectIssues.mjs";
+import {
+  nextProjectIssueCommentCreatedAt,
+  projectIssueEventsToIssues,
+} from "./projectIssues.mjs";
 import type {
   ProjectPullRequest,
   ProjectPullRequestCommentAnchor,
@@ -459,10 +462,16 @@ async function createProjectIssueComment({
     ...[...recipients].map((recipient) => ["p", recipient]),
     ...(mediaTags ?? []),
   ];
+  const identity = await getIdentity();
 
   const event = await signRelayEvent({
     kind: KIND_TEXT_NOTE,
     content: body,
+    createdAt: nextProjectIssueCommentCreatedAt(
+      issue,
+      Math.floor(Date.now() / 1_000),
+      identity.pubkey,
+    ),
     tags,
   });
 

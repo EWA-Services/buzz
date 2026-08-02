@@ -54,6 +54,11 @@ export function projectIssueEventsToIssues(
   statusEvents?: RelayEvent[],
   commentEvents?: RelayEvent[],
 ): ProjectIssue[];
+export function nextProjectIssueCommentCreatedAt(
+  issue: ProjectIssue,
+  now: number,
+  author: string,
+): number;
 export function buildGitIssueTags(input: {
   repoAddress: string;
   repoOwner: string;

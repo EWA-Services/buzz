@@ -134,6 +134,17 @@ export function projectIssueEventsToIssues(
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
+/** Keep consecutive comments ordered across whole-second Nostr timestamps. */
+export function nextProjectIssueCommentCreatedAt(issue, now, author) {
+  const normalizedAuthor = author.toLowerCase();
+  return Math.max(
+    now,
+    ...issue.comments
+      .filter((comment) => comment.author.toLowerCase() === normalizedAuthor)
+      .map((comment) => comment.createdAt + 1),
+  );
+}
+
 export function buildGitIssueTags({
   repoAddress,
   repoOwner,

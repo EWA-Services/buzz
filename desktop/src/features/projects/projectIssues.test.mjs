@@ -6,6 +6,7 @@ import {
   eventToProjectIssue,
   getAllTags,
   getTag,
+  nextProjectIssueCommentCreatedAt,
   PROJECT_ISSUE_STATUS,
 } from "./projectIssues.mjs";
 
@@ -138,4 +139,40 @@ test("builds repository-scoped issue creation tags", () => {
       ["subject", "Fix the broken workflow"],
     ],
   );
+});
+
+test("orders consecutive issue comments across whole-second timestamps", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      {
+        id: "comment-1",
+        kind: 1,
+        pubkey: AUTHOR,
+        created_at: 200,
+        content: "First",
+        tags: [["e", "e".repeat(64), "", "root"]],
+      },
+      {
+        id: "comment-2",
+        kind: 1,
+        pubkey: AUTHOR,
+        created_at: 201,
+        content: "Second",
+        tags: [["e", "e".repeat(64), "", "root"]],
+      },
+      {
+        id: "attacker-comment",
+        kind: 1,
+        pubkey: ATTACKER,
+        created_at: 10_000,
+        content: "Future",
+        tags: [["e", "e".repeat(64), "", "root"]],
+      },
+    ],
+  );
+
+  assert.equal(nextProjectIssueCommentCreatedAt(issue, 200, AUTHOR), 202);
+  assert.equal(nextProjectIssueCommentCreatedAt(issue, 300, AUTHOR), 300);
 });
