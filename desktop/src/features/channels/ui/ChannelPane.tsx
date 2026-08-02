@@ -36,7 +36,6 @@ import { getThreadPanelLayout } from "@/features/channels/lib/threadPanelLayout"
 import { useThreadViewMode } from "@/features/channels/lib/threadViewModePreference";
 import { useThreadViewModeSwitch } from "@/features/channels/ui/useThreadViewModeSwitch";
 import { useFocusDrawerPresence } from "@/features/channels/ui/useFocusDrawerPresence";
-import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
 import { ChannelComposerActivityRow } from "@/features/channels/ui/ChannelComposerActivityRow";
@@ -403,13 +402,9 @@ export const ChannelPane = React.memo(function ChannelPane({
   );
   const canDropInMainColumn =
     hasMainComposerOverlay && !isComposerDisabled && !isSinglePanelView;
-  // Working set for the composer bar (observer turns + bot-typing fallback,
-  // folded by agentWorkingSignal); gates the dock's reserved bottom rail.
   const composerWorkingBotPubkeys = useChannelWorkingAgentPubkeys(
     activeChannel?.id ?? null,
   );
-  // Background card mints surface in the same rail ("Minting card…" chip),
-  // so they must also reserve the activity row.
   const hasCardMintActivity = useCardMintJobs().length > 0;
   const hasComposerBottomActivity =
     composerWorkingBotPubkeys.length > 0 ||
@@ -794,9 +789,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                   }
                   showTopBorder={false}
                 />
-                {/* The accessory is anchored in the dock's reserved bottom
-                    rail, so fading it cannot change the observed overlay
-                    height or move the conversation. */}
                 <ComposerActivityAccessory visible={hasComposerBottomActivity}>
                   <ChannelComposerActivityRow
                     agents={activityAgents}
@@ -906,10 +898,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                         threadTypingPubkeys.length > 0 ? (
                           <TypingIndicatorRow
                             channel={activeChannel}
-                            // The strip's slot owns spacing and the
-                            // typing-only inset; zero the base paddings and
-                            // let the row shrink so the lone-item slot can
-                            // ellipsize the label.
                             className="min-w-0 shrink px-0 py-0 sm:px-0"
                             currentPubkey={currentPubkey}
                             profiles={profiles}

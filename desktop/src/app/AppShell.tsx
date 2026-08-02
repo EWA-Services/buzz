@@ -974,6 +974,7 @@ export function AppShell() {
                         onOpenChange={setIsSendFeedbackOpen}
                         open={isSendFeedbackOpen}
                       />
+                    </AppProfilePanelProvider>
                   </SidebarProvider>
                 </div>
 
