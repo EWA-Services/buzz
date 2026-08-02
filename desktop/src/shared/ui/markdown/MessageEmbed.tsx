@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, LockKeyhole } from "lucide-react";
+import { LockKeyhole } from "lucide-react";
 
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import {
@@ -45,6 +45,19 @@ export function MessageEmbed({
     ? messageEmbedExcerpt(event.content) || "Message has no text"
     : "";
   const [expanded, setExpanded] = useState(false);
+  const [isClamped, setIsClamped] = useState(false);
+  const excerptRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const excerptElement = excerptRef.current;
+    if (!excerptElement) return;
+    const updateClampedState = () =>
+      setIsClamped(excerptElement.scrollHeight > excerptElement.clientHeight);
+    updateClampedState();
+    const observer = new ResizeObserver(updateClampedState);
+    observer.observe(excerptElement);
+    return () => observer.disconnect();
+  });
 
   if (!canRead || eventQuery.isError || (eventQuery.data && !event)) {
     return (
@@ -96,39 +109,34 @@ export function MessageEmbed({
         <span aria-hidden="true" className="text-xs text-muted-foreground">
           ·
         </span>
-        <span className="min-w-0 truncate text-xs text-muted-foreground">
+        <button
+          aria-label={`Open message by ${displayName} in ${channel?.name ?? "channel"}`}
+          className="min-w-0 truncate text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onOpen}
+          type="button"
+        >
           #{channel?.name}
-        </span>
+        </button>
       </div>
       <span
         className={
           expanded
             ? "block text-sm leading-5 text-foreground"
-            : "block max-h-[3.75rem] overflow-hidden text-sm leading-5 text-foreground"
+            : "line-clamp-3 text-sm leading-5 text-foreground"
         }
+        ref={excerptRef}
       >
         {excerpt}
       </span>
-      <div className="mt-1 flex items-center gap-3 text-xs font-medium">
-        {excerpt.length > 240 ? (
-          <button
-            className="text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => setExpanded((value) => !value)}
-            type="button"
-          >
-            {expanded ? "Show less" : "Show more"}
-          </button>
-        ) : null}
+      {expanded || isClamped ? (
         <button
-          aria-label={`Open message by ${displayName} in ${channel?.name ?? "channel"}`}
-          className="inline-flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={onOpen}
+          className="mt-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => setExpanded((value) => !value)}
           type="button"
         >
-          View message
-          <ArrowUpRight aria-hidden="true" className="h-3 w-3" />
+          {expanded ? "Show less" : "Show more"}
         </button>
-      </div>
+      ) : null}
     </div>
   );
 }
