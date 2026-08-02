@@ -754,7 +754,6 @@ export function AppShell() {
                         communitiesHook.activeCommunity?.id ?? null
                       }
                       onAddCommunity={addCommunityDialog.openDialog}
-                      onRemoveCommunity={handleRemoveCommunity}
                       onReorderCommunities={communitiesHook.reorderCommunities}
                       onSwitchCommunity={handleSwitchCommunity}
                       onUpdateCommunity={communitiesHook.updateCommunity}
