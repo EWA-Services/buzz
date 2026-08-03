@@ -202,9 +202,8 @@ test("returns false when eviction frees nothing", () => {
 });
 
 test("buzz-observed-unread.v1: prefix participates in LRU eviction and durable state survives", () => {
-  // This test fails if the prefix is deleted or misspelled in PURE_CACHE_KEY_PREFIXES:
-  // without registration, the observed-unread bucket is invisible to the LRU trimmer and the
-  // older channel-messages entry is evicted instead — the observedKey assertion will fail.
+  // Sentinel: fails if buzz-observed-unread.v1: is removed from PURE_CACHE_KEY_PREFIXES —
+  // the bucket becomes invisible to LRU and the wrong entry is evicted instead.
   const ls = makeQuotaLocalStorage({ maxEntries: 20 });
   install(ls);
   ls.store.set("buzz-communities", "keep");
