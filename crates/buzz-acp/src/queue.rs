@@ -1460,6 +1460,13 @@ pub struct FormatPromptArgs<'a> {
     /// tri-state resolved: `Some` = present/stale-served, `None` = confirmed
     /// absent or first-fetch failure. DM turns always pass `None`.
     pub canvas_pointer: Option<&'a CanvasPointer>,
+    /// Authoritative DM classification for this turn, computed once at turn
+    /// start with fail-closed semantics (unresolved metadata → `true`).
+    ///
+    /// Passed through rather than re-derived from `channel_info` so that all
+    /// prompt paths within one turn share the same classification regardless of
+    /// whether metadata resolved successfully.
+    pub is_dm: bool,
 }
 
 /// Format the `[Base]` section for the base prompt.
@@ -1504,10 +1511,7 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
         }
     };
     let thread_tags = parse_thread_tags(&last_event.event);
-    let is_dm = args
-        .channel_info
-        .map(|ci| ci.channel_type == "dm")
-        .unwrap_or(false);
+    let is_dm = args.is_dm;
 
     let mut sections: Vec<String> = Vec::with_capacity(7);
 
@@ -3100,6 +3104,7 @@ mod tests {
             &batch,
             &FormatPromptArgs {
                 channel_info: Some(&ci),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -3221,6 +3226,7 @@ mod tests {
             &FormatPromptArgs {
                 channel_info: Some(&ci),
                 conversation_context: Some(&ctx),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -3479,6 +3485,7 @@ mod tests {
             &FormatPromptArgs {
                 channel_info: Some(&ci),
                 conversation_context: Some(&ctx),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -3527,6 +3534,7 @@ mod tests {
             &batch,
             &FormatPromptArgs {
                 channel_info: Some(&ci),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -4022,6 +4030,7 @@ mod tests {
             &batch,
             &FormatPromptArgs {
                 channel_info: Some(&ci),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -4086,6 +4095,7 @@ mod tests {
             &batch,
             &FormatPromptArgs {
                 channel_info: Some(&ci),
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -4637,6 +4647,7 @@ mod tests {
                 canvas_pointer: Some(&pointer),
                 channel_info: Some(&ci),
                 has_system_prompt_support: true,
+                is_dm: true,
                 ..Default::default()
             },
         )
@@ -5013,6 +5024,7 @@ mod tests {
             &FormatPromptArgs {
                 channel_info: Some(&ci),
                 has_system_prompt_support: true,
+                is_dm: true,
                 ..Default::default()
             },
         )

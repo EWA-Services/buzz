@@ -1939,7 +1939,7 @@ pub async fn run_prompt_task(
         let channel_info = turn_channel_info.clone();
 
         let conversation_context = if ctx.context_message_limit > 0 {
-            fetch_conversation_context(b, &channel_info, &ctx).await
+            fetch_conversation_context(b, &ctx, is_dm_turn).await
         } else {
             None
         };
@@ -1975,6 +1975,7 @@ pub async fn run_prompt_task(
                 system_prompt: ctx.system_prompt.as_deref(),
                 team_instructions: ctx.team_instructions.as_deref(),
                 canvas_pointer: canvas_pointer.as_ref(),
+                is_dm: is_dm_turn,
             },
         )
     } else {
@@ -2712,14 +2713,10 @@ pub(crate) fn canvas_pointer_from_query_response(
 /// reply event only (most recent = most likely to need a response).
 async fn fetch_conversation_context(
     batch: &FlushBatch,
-    channel_info: &Option<PromptChannelInfo>,
     ctx: &PromptContext,
+    is_dm_turn: bool,
 ) -> Option<ConversationContext> {
     let limit = ctx.context_message_limit;
-    let is_dm = channel_info
-        .as_ref()
-        .map(|ci| ci.channel_type == "dm")
-        .unwrap_or(false);
 
     // Check thread tags on the last event first — this applies to both
     // channels and DMs. A DM reply needs thread context (not channel history)
@@ -2738,7 +2735,7 @@ async fn fetch_conversation_context(
     }
 
     // DM non-reply: fetch recent conversation history.
-    if is_dm {
+    if is_dm_turn {
         return fetch_dm_context(batch.channel_id, limit, &ctx.rest_client).await;
     }
 
@@ -7396,6 +7393,101 @@ mod tests {
         assert!(
             !ctx_block.contains("Canvas revision (event ID):"),
             "DM turn must not include canvas revision; got:\n{ctx_block}"
+        );
+    }
+
+    // ── Unresolved-metadata fail-closed classification (A1/A2) ───────────────
+
+    /// When channel metadata cannot be resolved (None), the turn's authoritative
+    /// `is_dm_turn = true` must flow through to BOTH prompt paths:
+    ///
+    /// 1. `initial_message` (via `format_context_hints` with `is_dm = true`)
+    /// 2. Batch prompt (via `FormatPromptArgs::is_dm = true`)
+    ///
+    /// Both must render `Scope: dm`, omit description, omit canvas pointer, and
+    /// select DM conversation behavior — never silently fall back to channel scope.
+    #[test]
+    fn test_unresolved_metadata_both_prompts_render_scope_dm() {
+        use crate::queue::{
+            format_context_hints, format_prompt, CanvasPointer, FlushBatch, FormatPromptArgs,
+            ThreadTags,
+        };
+        use nostr::Timestamp;
+
+        let channel_id = Uuid::from_u128(0x0003);
+        // Simulate a canvas pointer that must be suppressed for DM turns.
+        let canvas = CanvasPointer {
+            event_id: "cafebabe".to_string(),
+            timestamp: "2024-06-01T12:00:00Z".to_string(),
+        };
+
+        // ── initial_message path ─────────────────────────────────────────────
+        // run_prompt_task passes: channel_info = None (unresolved), is_dm_turn = true.
+        let init_ctx = format_context_hints(
+            channel_id,
+            None, // channel_info = None (unresolved metadata)
+            &ThreadTags::default(),
+            true, // is_dm_turn = true (fail-closed)
+            false,
+            None,
+            Some(&canvas), // canvas pointer present — must be suppressed
+        );
+
+        assert!(
+            init_ctx.contains("Scope: dm"),
+            "initial_message: unresolved metadata must render Scope: dm; got:\n{init_ctx}"
+        );
+        assert!(
+            !init_ctx.contains("Description:"),
+            "initial_message: unresolved metadata must not include description; got:\n{init_ctx}"
+        );
+        assert!(
+            !init_ctx.contains("Canvas revision (event ID):"),
+            "initial_message: unresolved metadata must not include canvas; got:\n{init_ctx}"
+        );
+
+        // ── batch prompt path ────────────────────────────────────────────────
+        // FormatPromptArgs::is_dm = true must govern rendering, not channel_info.
+        let event = {
+            let keys = nostr::Keys::generate();
+            nostr::EventBuilder::new(nostr::Kind::Custom(1), "hello")
+                .custom_created_at(Timestamp::from(1_700_000_000u64))
+                .sign_with_keys(&keys)
+                .expect("sign")
+        };
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![crate::queue::BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        let prompt = format_prompt(
+            &batch,
+            &FormatPromptArgs {
+                channel_info: None,            // unresolved metadata
+                is_dm: true,                   // fail-closed classification
+                canvas_pointer: Some(&canvas), // must be suppressed
+                ..Default::default()
+            },
+        )
+        .join("\n\n");
+
+        assert!(
+            prompt.contains("Scope: dm"),
+            "batch prompt: unresolved metadata must render Scope: dm; got:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("Description:"),
+            "batch prompt: unresolved metadata must not include description; got:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("Canvas revision (event ID):"),
+            "batch prompt: unresolved metadata must not include canvas; got:\n{prompt}"
         );
     }
 }
