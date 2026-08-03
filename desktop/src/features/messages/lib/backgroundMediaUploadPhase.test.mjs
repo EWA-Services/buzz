@@ -11,11 +11,15 @@ test("upload phase labels describe the real work in plain language", () => {
   assert.equal(backgroundMediaUploadPhaseLabel("preparing"), "Preparing");
   assert.equal(
     backgroundMediaUploadPhaseLabel("processing-video"),
-    "Processing video",
+    "Processing",
   );
   assert.equal(
     backgroundMediaUploadPhaseLabel("converting-image"),
-    "Converting image",
+    "Converting",
+  );
+  assert.equal(
+    backgroundMediaUploadPhaseLabel("processing-files"),
+    "Processing",
   );
   assert.equal(backgroundMediaUploadPhaseLabel("uploading"), "Uploading");
   assert.equal(backgroundMediaUploadPhaseLabel("finishing"), "Finishing");

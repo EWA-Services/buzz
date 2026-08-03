@@ -45,11 +45,11 @@ export function backgroundMediaUploadPhaseLabel(
 ): string {
   switch (phase) {
     case "processing-video":
-      return "Processing video";
+      return "Processing";
     case "converting-image":
-      return "Converting image";
+      return "Converting";
     case "processing-files":
-      return "Processing files";
+      return "Processing";
     case "uploading":
       return "Uploading";
     case "finishing":

@@ -173,7 +173,7 @@ test("shows upload feedback before transferring a large file", async ({
       phase: "processing-video",
     });
   }, uploadId);
-  await expect(progress).toHaveAttribute("aria-label", "Processing video 0%");
+  await expect(progress).toHaveAttribute("aria-label", "Processing 0%");
   await waitForAnimations(page);
   const processingPercentageBox = await page
     .getByTestId("composer-upload-percentage")
