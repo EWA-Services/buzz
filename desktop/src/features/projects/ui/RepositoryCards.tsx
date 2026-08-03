@@ -112,11 +112,6 @@ function RepositoryIdentity({
           <span className={PROJECT_LIST_ROW_TITLE_CLASS}>
             {repository.name}
           </span>
-          {repository.repoAddress === project.primaryRepositoryAddress ? (
-            <span className="shrink-0 text-xs text-muted-foreground">
-              Primary
-            </span>
-          ) : null}
         </div>
         <p className={PROJECT_LIST_ROW_PREVIEW_CLASS}>
           {project.name}

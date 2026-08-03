@@ -131,7 +131,15 @@ export function useCreateProjectMutation() {
     onSuccess: ({ project }) => {
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) => [
         project,
-        ...current.filter((candidate) => candidate.id !== project.id),
+        ...current.filter(
+          (candidate) =>
+            candidate.id !== project.id &&
+            !(
+              candidate.legacy &&
+              candidate.owner === project.owner &&
+              candidate.dtag === project.dtag
+            ),
+        ),
       ]);
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
     },

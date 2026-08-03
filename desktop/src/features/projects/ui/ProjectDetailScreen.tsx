@@ -74,6 +74,7 @@ import type { CreateIssueDialogInput } from "./CreateIssueDialog";
 import { ProjectBranchActionDialogs } from "./ProjectBranchActionDialogs";
 import { AddProjectRepositoryDialog } from "./AddProjectRepositoryDialog";
 import { ProjectDetailChrome } from "./ProjectDetailChrome";
+import { UnavailableProjectRepositories } from "./UnavailableProjectRepositories";
 import {
   PROJECT_TAB_CRUMB_LABELS,
   projectPeople,
@@ -751,6 +752,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         <p className="text-sm text-muted-foreground">
           This project does not have any available repositories yet.
         </p>
+        <UnavailableProjectRepositories project={project} />
       </div>
     );
   }

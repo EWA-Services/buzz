@@ -72,6 +72,15 @@ async function addProjectRepository({
   if (!repository) {
     throw new Error("The repository was created but could not be read.");
   }
+  const repositoryAddresses = [
+    ...new Set([...project.repositoryAddresses, repository.repoAddress]),
+  ].sort();
+  const repositories = [
+    ...project.repositories.filter(
+      (candidate) => candidate.repoAddress !== repository.repoAddress,
+    ),
+    repository,
+  ].sort((left, right) => left.repoAddress.localeCompare(right.repoAddress));
 
   return {
     project: {
@@ -79,11 +88,17 @@ async function addProjectRepository({
       createdAt: projectEvent.created_at,
       legacy: false,
       projectAddress: `${KIND_PROJECT_ANNOUNCEMENT}:${project.owner}:${project.dtag}`,
-      repositoryAddresses: [
-        ...project.repositoryAddresses,
-        repository.repoAddress,
-      ],
-      repositories: [...project.repositories, repository],
+      primaryRepositoryAddress:
+        repositories.find((candidate) => candidate.dtag === project.dtag)
+          ?.repoAddress ??
+        repositories[0]?.repoAddress ??
+        null,
+      repositoryAddresses,
+      repositories,
+      unavailableRepositoryAddresses:
+        project.unavailableRepositoryAddresses?.filter(
+          (address) => address !== repository.repoAddress,
+        ) ?? [],
     },
     repository,
   };

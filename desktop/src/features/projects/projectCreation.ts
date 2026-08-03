@@ -47,6 +47,9 @@ export function buildInitialProjectEventTemplates({
   if (!normalizedName) {
     throw new Error("Project name is required.");
   }
+  if (new TextEncoder().encode(normalizedName).byteLength > 256) {
+    throw new Error("Project name must not exceed 256 bytes.");
+  }
   const dtag = projectDtagFromName(normalizedName);
   if (!dtag) {
     throw new Error("Project name must include letters or numbers.");
@@ -57,8 +60,8 @@ export function buildInitialProjectEventTemplates({
   }
 
   const normalizedDescription = description?.trim() ?? "";
-  if (new TextEncoder().encode(normalizedDescription).byteLength > 1_024) {
-    throw new Error("Project description must not exceed 1,024 bytes.");
+  if (new TextEncoder().encode(normalizedDescription).byteLength > 2_048) {
+    throw new Error("Project description must not exceed 2,048 bytes.");
   }
   const repositoryTags: string[][] = [
     ["d", dtag],
@@ -82,13 +85,13 @@ export function buildInitialProjectEventTemplates({
   }
 
   const repositoryAddress = `${KIND_REPO_ANNOUNCEMENT}:${normalizedOwner}:${dtag}`;
-  projectTags.push(["a", repositoryAddress, "", "primary"]);
+  projectTags.push(["a", repositoryAddress]);
 
   return {
     dtag,
     project: {
       kind: KIND_PROJECT_ANNOUNCEMENT,
-      content: normalizedDescription,
+      content: "",
       tags: projectTags,
     },
     repository: {

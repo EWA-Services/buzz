@@ -13,16 +13,21 @@ const project = {
   description: "A multi-repository workspace",
   owner: OWNER,
   createdAt: 1,
-  projectChannelId: "engineering",
+  projectChannelId: "11111111-1111-4111-8111-111111111111",
   status: "active",
   projectAddress: `30621:${OWNER}:buzz`,
   primaryRepositoryAddress: `30617:${OWNER}:desktop`,
   repositoryAddresses: [`30617:${OWNER}:desktop`, `30617:${OTHER_OWNER}:relay`],
+  repositoryRelayHints: {
+    [`30617:${OTHER_OWNER}:relay`]: "wss://relay.example",
+  },
   repositories: [],
+  unavailableRepositoryAddresses: [],
+  visibility: "listed",
   legacy: false,
 };
 
-test("buildAddedRepositoryEventTemplates preserves project membership and primary", () => {
+test("buildAddedRepositoryEventTemplates preserves NIP-MP project metadata and membership", () => {
   const templates = buildAddedRepositoryEventTemplates({
     project,
     ownerPubkey: OWNER,
@@ -43,11 +48,12 @@ test("buildAddedRepositoryEventTemplates preserves project membership and primar
     ["d", "buzz"],
     ["name", "Buzz"],
     ["description", "A multi-repository workspace"],
-    ["h", "engineering"],
-    ["a", `30617:${OWNER}:desktop`, "", "primary"],
-    ["a", `30617:${OTHER_OWNER}:relay`],
+    ["buzz-channel", "11111111-1111-4111-8111-111111111111"],
+    ["a", `30617:${OWNER}:desktop`],
+    ["a", `30617:${OTHER_OWNER}:relay`, "wss://relay.example"],
     ["a", `30617:${OWNER}:mobile-app`],
   ]);
+  assert.equal(templates.project.content, "");
 });
 
 test("buildAddedRepositoryEventTemplates rejects updates by another owner", () => {

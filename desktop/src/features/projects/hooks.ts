@@ -63,6 +63,8 @@ import {
   type Project,
   type Repository,
 } from "./projectModels";
+import { fetchProjectEventsExhaustively } from "./projectEnumeration";
+import { projectMatchesRouteId } from "./projectRoutes";
 
 export type {
   Project,
@@ -141,19 +143,20 @@ function readHiddenProjectCards(): string[] {
   }
 }
 
-function isHiddenLocally(project: Project): boolean {
-  return readHiddenProjectCards().includes(project.projectAddress);
-}
-
-function isDeletedByA(project: Project, deletionEvents: RelayEvent[]): boolean {
+function isDeletedByA(
+  event: RelayEvent,
+  deletionEvents: RelayEvent[],
+): boolean {
+  const dtag = event.tags.find((tag) => tag[0] === "d")?.[1];
+  if (!dtag) return false;
+  const address = `${event.kind}:${event.pubkey.toLowerCase()}:${dtag}`;
   // NIP-09: a deletion is only valid when signed by the author of the
   // referenced event — otherwise anyone could hide someone else's project.
   return deletionEvents.some(
-    (event) =>
-      event.pubkey.toLowerCase() === project.owner.toLowerCase() &&
-      event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === project.projectAddress,
-      ),
+    (deletion) =>
+      deletion.created_at >= event.created_at &&
+      deletion.pubkey.toLowerCase() === event.pubkey.toLowerCase() &&
+      deletion.tags.some((tag) => tag[0] === "a" && tag[1] === address),
   );
 }
 
@@ -178,57 +181,29 @@ export function eventToProject(
 
 export async function fetchProjects(): Promise<Project[]> {
   const [projectEvents, repositoryEvents, deletionEvents] = await Promise.all([
-    relayClient.fetchEvents({
-      kinds: [KIND_PROJECT_ANNOUNCEMENT],
-      limit: 200,
-    }),
-    relayClient.fetchEvents({
-      kinds: [KIND_REPO_ANNOUNCEMENT],
-      limit: 200,
-    }),
-    relayClient.fetchEvents({
-      kinds: [KIND_DELETION],
-      limit: 500,
-    }),
+    fetchProjectEventsExhaustively([KIND_PROJECT_ANNOUNCEMENT]),
+    fetchProjectEventsExhaustively([KIND_REPO_ANNOUNCEMENT]),
+    fetchProjectEventsExhaustively([KIND_DELETION]),
   ]);
+  const liveProjectEvents = projectEvents.filter(
+    (event) => !isDeletedByA(event, deletionEvents),
+  );
+  const liveRepositoryEvents = repositoryEvents.filter(
+    (event) => !isDeletedByA(event, deletionEvents),
+  );
 
   return buildProjectReadModels({
-    projectEvents,
-    repositoryEvents,
+    projectEvents: liveProjectEvents,
+    repositoryEvents: liveRepositoryEvents,
     relayOrigin: getCachedRelayOrigin(),
-  })
-    .filter(
-      (project) =>
-        !isHiddenLocally(project) && !isDeletedByA(project, deletionEvents),
-    )
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-/**
- * Splits a project route ID into its owner pubkey and dtag. The canonical
- * form is `<owner-pubkey>:<dtag>` (matching `Project.id`) — NIP-34 repo
- * identity is the full `30617:<owner>:<dtag>` coordinate, and two owners can
- * both publish the same dtag (forks). Bare-dtag IDs from legacy links are
- * still resolved, ambiguously, to whichever owner the relay returns first.
- */
-function parseProjectRouteId(projectId: string): {
-  owner: string | null;
-  dtag: string;
-} {
-  const owner = projectId.slice(0, 64);
-  if (projectId[64] === ":" && /^[0-9a-fA-F]{64}$/.test(owner)) {
-    return { owner: owner.toLowerCase(), dtag: projectId.slice(65) };
-  }
-  return { owner: null, dtag: projectId };
+    hiddenAddresses: new Set(readHiddenProjectCards()),
+  }).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 async function fetchProject(projectId: string): Promise<Project | null> {
-  const { owner, dtag } = parseProjectRouteId(projectId);
   return (
-    (await fetchProjects()).find(
-      (project) =>
-        project.dtag === dtag &&
-        (!owner || project.owner.toLowerCase() === owner),
+    (await fetchProjects()).find((project) =>
+      projectMatchesRouteId(project, projectId),
     ) ?? null
   );
 }

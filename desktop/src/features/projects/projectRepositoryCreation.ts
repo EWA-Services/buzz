@@ -47,8 +47,17 @@ export function buildAddedRepositoryEventTemplates({
   }
 
   const repositoryAddress = `${KIND_REPO_ANNOUNCEMENT}:${normalizedOwner}:${repositoryDtag}`;
-  if (project.repositoryAddresses.includes(repositoryAddress)) {
+  const isUnavailableMember =
+    project.unavailableRepositoryAddresses?.includes(repositoryAddress) ??
+    false;
+  if (
+    project.repositoryAddresses.includes(repositoryAddress) &&
+    !isUnavailableMember
+  ) {
     throw new Error(`This project already contains "${repositoryDtag}".`);
+  }
+  if (!isUnavailableMember && project.repositoryAddresses.length >= 64) {
+    throw new Error("A project cannot contain more than 64 repositories.");
   }
 
   const normalizedDescription = description?.trim() ?? "";
@@ -72,24 +81,23 @@ export function buildAddedRepositoryEventTemplates({
     projectTags.push(["description", project.description]);
   }
   if (project.projectChannelId) {
-    projectTags.push(["h", project.projectChannelId]);
+    projectTags.push(["buzz-channel", project.projectChannelId]);
   }
-  if (project.status && project.status !== "active") {
-    projectTags.push(["status", project.status]);
+  if (project.visibility === "unlisted") {
+    projectTags.push(["buzz-visibility", "unlisted"]);
   }
   for (const address of project.repositoryAddresses) {
-    projectTags.push(
-      address === project.primaryRepositoryAddress
-        ? ["a", address, "", "primary"]
-        : ["a", address],
-    );
+    const relayHint = project.repositoryRelayHints?.[address];
+    projectTags.push(relayHint ? ["a", address, relayHint] : ["a", address]);
   }
-  projectTags.push(["a", repositoryAddress]);
+  if (!isUnavailableMember) {
+    projectTags.push(["a", repositoryAddress]);
+  }
 
   return {
     project: {
       kind: KIND_PROJECT_ANNOUNCEMENT,
-      content: project.description,
+      content: "",
       tags: projectTags,
     },
     repository: {

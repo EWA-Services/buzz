@@ -8,7 +8,7 @@ import {
 
 const OWNER = "a".repeat(64);
 
-test("buildInitialProjectEventTemplates links the initial repository as primary", () => {
+test("buildInitialProjectEventTemplates emits a NIP-MP project", () => {
   const templates = buildInitialProjectEventTemplates({
     cloneUrl: "https://relay.example/git/owner/sprout.git",
     description: "A multi-repository workspace",
@@ -24,8 +24,9 @@ test("buildInitialProjectEventTemplates links the initial repository as primary"
     ["d", "sprout"],
     ["name", "Sprout"],
     ["description", "A multi-repository workspace"],
-    ["a", `30617:${OWNER}:sprout`, "", "primary"],
+    ["a", `30617:${OWNER}:sprout`],
   ]);
+  assert.equal(templates.project.content, "");
   assert.deepEqual(templates.repository.tags, [
     ["d", "sprout"],
     ["name", "Sprout"],
@@ -46,10 +47,10 @@ test("buildInitialProjectEventTemplates rejects names without an identifier", ()
   );
 });
 
-test("buildInitialProjectEventTemplates enforces the project content byte limit", () => {
+test("buildInitialProjectEventTemplates enforces the description tag byte limit", () => {
   assert.doesNotThrow(() =>
     buildInitialProjectEventTemplates({
-      description: "🙂".repeat(256),
+      description: "🙂".repeat(512),
       name: "Sprout",
       ownerPubkey: OWNER,
     }),
@@ -57,11 +58,11 @@ test("buildInitialProjectEventTemplates enforces the project content byte limit"
   assert.throws(
     () =>
       buildInitialProjectEventTemplates({
-        description: "🙂".repeat(257),
+        description: "🙂".repeat(513),
         name: "Sprout",
         ownerPubkey: OWNER,
       }),
-    /1,024 bytes/,
+    /2,048 bytes/,
   );
 });
 

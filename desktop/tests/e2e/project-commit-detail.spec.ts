@@ -247,9 +247,8 @@ test("creating a project publishes its initial repository grouping", async ({
   expect(projectEvent?.tags).toContainEqual([
     "a",
     `30617:${"deadbeef".repeat(8)}:multi-repo-demo`,
-    "",
-    "primary",
   ]);
+  expect(projectEvent?.content).toBe("");
 
   await page.getByTestId("projects-create-menu").hover();
   await page.getByRole("menuitem", { name: "Project" }).click();

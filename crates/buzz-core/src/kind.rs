@@ -428,9 +428,6 @@ pub const KIND_WINDOW_BOUNDS: u32 = 39006;
 /// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
 
-/// Backward-compatible name for [`KIND_PROJECT`].
-pub const KIND_PROJECT_ANNOUNCEMENT: u32 = KIND_PROJECT;
-
 /// NIP-DV: per-viewer DM visibility snapshot (relay-signed, parameterized
 /// replaceable, d=viewer_pubkey). Carries one `h` tag per DM the viewer has
 /// hidden from their sidebar. Re-published by the relay on every hide/unhide so

@@ -488,8 +488,8 @@ export function ProjectGridCard({
               {project.name}
             </span>
             <span className="shrink-0 text-xs text-muted-foreground">
-              {project.repositories.length}{" "}
-              {project.repositories.length === 1
+              {project.repositoryAddresses.length}{" "}
+              {project.repositoryAddresses.length === 1
                 ? "repository"
                 : "repositories"}
             </span>
@@ -584,8 +584,10 @@ export function ProjectListRow({
             className="hidden w-24 shrink-0 text-xs text-muted-foreground md:block"
             data-testid="projects-row-context"
           >
-            {project.repositories.length}{" "}
-            {project.repositories.length === 1 ? "repository" : "repositories"}
+            {project.repositoryAddresses.length}{" "}
+            {project.repositoryAddresses.length === 1
+              ? "repository"
+              : "repositories"}
           </div>
           <div
             className="flex w-6 shrink-0 justify-center"

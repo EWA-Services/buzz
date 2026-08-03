@@ -27,10 +27,11 @@ export function ProjectRepositoryPicker({
       <span className="truncate">{repository.name}</span>
     </>
   );
+  const unavailableRepositories = project.unavailableRepositoryAddresses ?? [];
 
   return (
     <div className="flex items-center gap-1.5">
-      {project.repositories.length === 1 ? (
+      {project.repositoryAddresses.length === 1 ? (
         <div
           className="flex h-8 max-w-64 shrink-0 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm font-medium"
           data-testid="project-repository-picker"
@@ -61,14 +62,23 @@ export function ProjectRepositoryPicker({
                 onSelect={() => onChange(candidate.id)}
               >
                 <span className="min-w-0 truncate">{candidate.name}</span>
-                {candidate.repoAddress === project.primaryRepositoryAddress ? (
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    Primary
-                  </span>
-                ) : null}
                 {candidate.id === repository.id ? (
                   <Check className="h-4 w-4 shrink-0" />
                 ) : null}
+              </DropdownMenuItem>
+            ))}
+            {unavailableRepositories.map((address) => (
+              <DropdownMenuItem
+                className="justify-between gap-4"
+                disabled
+                key={address}
+              >
+                <span className="min-w-0 truncate">
+                  {address.slice(address.indexOf(":", 6) + 1)}
+                </span>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  Unavailable
+                </span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>

@@ -3117,18 +3117,6 @@ mod tests {
     }
 
     #[test]
-    fn project_announcement_uses_repo_scope_and_global_storage() {
-        let dummy = make_dummy_event();
-        let kind = buzz_core::kind::KIND_PROJECT_ANNOUNCEMENT;
-        assert_eq!(
-            required_scope_for_kind(kind, &dummy).unwrap(),
-            Scope::ReposWrite,
-        );
-        assert!(is_global_only_kind(kind));
-        assert!(!requires_h_channel_scope(kind));
-    }
-
-    #[test]
     fn user_status_requires_users_write_scope() {
         let dummy = make_dummy_event();
         assert_eq!(

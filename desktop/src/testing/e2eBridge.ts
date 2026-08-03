@@ -5242,12 +5242,12 @@ function buildMockProjectEvents(): RelayEvent[] {
   events.push(
     createMockEvent(
       KIND_PROJECT_ANNOUNCEMENT,
-      "Relay, desktop, mobile, and operator tooling for Buzz.",
+      "",
       [
         ["d", "buzz"],
         ["name", "buzz"],
         ["description", "The complete Buzz community platform."],
-        ["a", `${KIND_REPO_ANNOUNCEMENT}:${projectOwner}:buzz`, "", "primary"],
+        ["a", `${KIND_REPO_ANNOUNCEMENT}:${projectOwner}:buzz`],
         ["a", `${KIND_REPO_ANNOUNCEMENT}:${ALICE_PUBKEY}:relay-tools`],
       ],
       projectOwner,
