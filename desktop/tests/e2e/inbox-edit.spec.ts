@@ -7,6 +7,11 @@ const GENERAL_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
 const CURRENT_PUBKEY = "deadbeef".repeat(8);
 const OWN_MESSAGE_ID = "d1".repeat(32);
 const FOREIGN_MESSAGE_ID = "e2".repeat(32);
+const EMPTY_DELETE_ROOT_ID = "a1".repeat(32);
+const EMPTY_DELETE_REPLY_ID = "b2".repeat(32);
+const EMPTY_DELETE_ROOT_CONTENT = "Inbox empty-edit root message.";
+const EMPTY_DELETE_REPLY_CONTENT =
+  "Selected Inbox reply remains after root deletion.";
 const ATTACHMENT_URL = `https://mock.relay/media/${"a".repeat(64)}.pdf`;
 const ATTACHMENT_FILENAME = "inbox-edit-proof.pdf";
 const SHOTS = "test-results/inbox-edit";
@@ -28,6 +33,21 @@ type MockWindow = Window & {
     command: string;
     payload: unknown;
   }>;
+  __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: (input: {
+    channelName: string;
+    content: string;
+    parentEventId?: string | null;
+    pubkey?: string;
+    mentionPubkeys?: string[];
+    id?: string;
+  }) => {
+    content: string;
+    created_at: number;
+    id: string;
+    kind: number;
+    pubkey: string;
+    tags: string[][];
+  };
   __BUZZ_E2E_INVALIDATE_CHANNELS__?: () => Promise<void>;
   __BUZZ_E2E_RELEASE_SEND_MESSAGE_LIVE_ECHO__?: () => number;
   __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (
@@ -45,6 +65,99 @@ async function openMoreActions(
   await row.hover();
   await page.getByTestId(`more-actions-${messageId}`).click();
   await expect(page.locator('[role="menuitem"]').first()).toBeVisible();
+}
+
+async function seedEmptyDeleteThread(page: import("@playwright/test").Page) {
+  await page.waitForFunction(() => {
+    const win = window as MockWindow;
+    return (
+      typeof win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function" &&
+      typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function"
+    );
+  });
+  await page.evaluate(
+    ({
+      channelId,
+      currentPubkey,
+      replyContent,
+      replyId,
+      rootContent,
+      rootId,
+    }) => {
+      const win = window as MockWindow;
+      const emit = win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      const push = win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
+      if (!emit || !push)
+        throw new Error("Mock bridge helpers are unavailable.");
+      const root = emit({
+        channelName: "general",
+        content: rootContent,
+        id: rootId,
+        pubkey: currentPubkey,
+      });
+      const reply = emit({
+        channelName: "general",
+        content: replyContent,
+        id: replyId,
+        mentionPubkeys: [currentPubkey],
+        parentEventId: root.id,
+        pubkey: currentPubkey,
+      });
+      push({
+        category: "mention",
+        channel_id: channelId,
+        channel_name: "general",
+        content: reply.content,
+        created_at: reply.created_at,
+        id: reply.id,
+        kind: reply.kind,
+        pubkey: reply.pubkey,
+        tags: reply.tags,
+      });
+    },
+    {
+      channelId: GENERAL_CHANNEL_ID,
+      currentPubkey: CURRENT_PUBKEY,
+      replyContent: EMPTY_DELETE_REPLY_CONTENT,
+      replyId: EMPTY_DELETE_REPLY_ID,
+      rootContent: EMPTY_DELETE_ROOT_CONTENT,
+      rootId: EMPTY_DELETE_ROOT_ID,
+    },
+  );
+  await page.getByTestId(`home-inbox-item-${EMPTY_DELETE_REPLY_ID}`).click();
+  const detail = page.getByTestId("home-inbox-detail");
+  const rootRow = detail.locator(`[data-message-id="${EMPTY_DELETE_ROOT_ID}"]`);
+  await expect(rootRow).toContainText(EMPTY_DELETE_ROOT_CONTENT);
+  await expect(
+    detail.locator(`[data-message-id="${EMPTY_DELETE_REPLY_ID}"]`),
+  ).toContainText(EMPTY_DELETE_REPLY_CONTENT);
+  return { detail, rootRow };
+}
+
+async function submitEmptyEdit(
+  page: import("@playwright/test").Page,
+  detail: import("@playwright/test").Locator,
+  messageId: string,
+) {
+  await openMoreActions(page, messageId);
+  const editAction = page.getByTestId(`edit-message-${messageId}`);
+  await expect(editAction).toBeVisible();
+  await editAction.click();
+  await expect(detail.getByTestId("edit-target")).toBeVisible();
+  const input = detail.getByTestId("message-input");
+  await expect(input).not.toBeEmpty();
+  await input.fill("");
+  await expect(input).toBeEmpty();
+  await page.keyboard.press("Enter");
+}
+
+function editCommandCount(page: import("@playwright/test").Page) {
+  return page.evaluate(
+    () =>
+      ((window as MockWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+        (entry) => entry.command === "edit_message",
+      ).length,
+  );
 }
 
 test("editing an immediate attachment reply preserves its media tags", async ({
@@ -316,4 +429,72 @@ test("Inbox offers a working Edit action only for manageable messages", async ({
   await expect(page.getByTestId(`edit-message-${OWN_MESSAGE_ID}`)).toHaveCount(
     0,
   );
+});
+
+test("empty edit confirms deletion of the edited non-selected Inbox row", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+  const { detail, rootRow } = await seedEmptyDeleteThread(page);
+  const selectedReplyRow = detail.locator(
+    `[data-message-id="${EMPTY_DELETE_REPLY_ID}"]`,
+  );
+  const editsBefore = await editCommandCount(page);
+
+  await submitEmptyEdit(page, detail, EMPTY_DELETE_ROOT_ID);
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("Delete message?");
+  await expect(detail.getByTestId("edit-target")).toBeVisible();
+  expect(await editCommandCount(page)).toBe(editsBefore);
+
+  await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(detail.getByTestId("edit-target")).toBeHidden();
+  await expect(rootRow).toBeHidden();
+  await expect(selectedReplyRow).toContainText(EMPTY_DELETE_REPLY_CONTENT);
+  expect(await editCommandCount(page)).toBe(editsBefore);
+
+  const deletePayload = await page.evaluate(() => {
+    const payloads = (window as MockWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [];
+    return payloads.findLast((entry) => entry.command === "delete_message")
+      ?.payload;
+  });
+  expect(deletePayload).toEqual(
+    expect.objectContaining({ eventId: EMPTY_DELETE_ROOT_ID }),
+  );
+});
+
+test("cancelling an empty Inbox edit deletion preserves content and edit mode", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+  const { detail, rootRow } = await seedEmptyDeleteThread(page);
+  const editsBefore = await editCommandCount(page);
+
+  await submitEmptyEdit(page, detail, EMPTY_DELETE_ROOT_ID);
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("Delete message?");
+  await expect(detail.getByTestId("edit-target")).toBeVisible();
+  expect(await editCommandCount(page)).toBe(editsBefore);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(detail.getByTestId("edit-target")).toBeVisible();
+  await expect(rootRow).toContainText(EMPTY_DELETE_ROOT_CONTENT);
+  await expect(
+    detail.locator(`[data-message-id="${EMPTY_DELETE_REPLY_ID}"]`),
+  ).toContainText(EMPTY_DELETE_REPLY_CONTENT);
+  expect(await editCommandCount(page)).toBe(editsBefore);
+  expect(
+    await page.evaluate(
+      () =>
+        ((window as MockWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+          (entry) => entry.command === "delete_message",
+        ).length,
+    ),
+  ).toBe(0);
 });

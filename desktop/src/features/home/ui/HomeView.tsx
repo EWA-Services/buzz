@@ -53,6 +53,7 @@ import {
 } from "@/features/messages/hooks";
 import { collectMessageMentionPubkeys } from "@/features/messages/lib/formatTimelineMessages";
 import { formatTime } from "@/features/messages/lib/dateFormatters";
+import { DeleteMessageConfirmDialog } from "@/features/messages/ui/DeleteMessageConfirmDialog";
 import { splitOutgoingTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
@@ -211,6 +212,8 @@ export function HomeView({
     [applyInboxSearchPatch],
   );
   const [isDeletingMessage, setIsDeletingMessage] = React.useState(false);
+  const [emptyDeleteId, setEmptyDeleteId] = React.useState<string | null>(null);
+  const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
   const [isSendingReply, setIsSendingReply] = React.useState(false);
   const handleOpenDm = React.useCallback(
     async (pubkeys: string[]) => {
@@ -453,6 +456,25 @@ export function HomeView({
     }
     return null;
   }, [filteredItems, selectedConversationId, selectedEventId]);
+  const deleteInboxMessage = React.useCallback(
+    async (eventId: string) => {
+      const channelId = selectedItem?.item.channelId;
+      if (!channelId) return;
+      setIsDeletingMessage(true);
+      try {
+        await deleteMessage(channelId, eventId);
+        await threadContext.refreshStructuralEvents();
+        onRefresh();
+      } finally {
+        setIsDeletingMessage(false);
+      }
+    },
+    [
+      onRefresh,
+      selectedItem?.item.channelId,
+      threadContext.refreshStructuralEvents,
+    ],
+  );
   const unreadBoundaryEventId = React.useMemo(() => {
     if (!selectedItem) return null;
     if (unreadBoundary?.conversationId === selectedItem.conversationId) {
@@ -497,6 +519,8 @@ export function HomeView({
 
   React.useEffect(() => {
     void selectedConversationId;
+    setEmptyDeleteId(null);
+    setEditTargetId(null);
     setIsDeletingMessage(false);
     setIsSendingReply(false);
   }, [selectedConversationId]);
@@ -614,6 +638,19 @@ export function HomeView({
 
   return (
     <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
+      <DeleteMessageConfirmDialog
+        onConfirm={() => {
+          if (emptyDeleteId) {
+            setEditTargetId(null);
+            void deleteInboxMessage(emptyDeleteId);
+          }
+          setEmptyDeleteId(null);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setEmptyDeleteId(null);
+        }}
+        open={emptyDeleteId !== null}
+      />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           className={cn(
@@ -768,6 +805,8 @@ export function HomeView({
               profiles={feedProfiles}
               selectedEventId={selectedEventId}
               unreadBoundaryEventId={unreadBoundaryEventId}
+              editTargetId={editTargetId}
+              onEditTargetChange={setEditTargetId}
               onBack={
                 isSinglePanelDetailView
                   ? () => {
@@ -776,28 +815,15 @@ export function HomeView({
                   : undefined
               }
               onDelete={() => {
-                if (!selectedItem || !canDelete) {
-                  return;
-                }
-                const channelId = selectedItem.item.channelId;
-                if (!channelId) {
-                  return;
-                }
-
-                setIsDeletingMessage(true);
-                void deleteMessage(channelId, selectedItem.id)
-                  .then(() => {
-                    onRefresh();
-                  })
-                  .finally(() => {
-                    setIsDeletingMessage(false);
-                  });
+                if (!selectedItem || !canDelete) return;
+                void deleteInboxMessage(selectedItem.id);
               }}
               onManageChannel={(channelId) => {
                 handleCloseProfilePanel();
                 setManagedChannelId(channelId);
               }}
               onEditSave={editMessage}
+              onRequestEmptyEditDelete={setEmptyDeleteId}
               onOpenContext={onOpenContext}
               onSendReply={async ({
                 content,

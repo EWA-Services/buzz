@@ -71,6 +71,7 @@ type InboxDetailPaneProps = {
   isDeletingMessage?: boolean;
   isEditingMessage?: boolean;
   isSendingReply?: boolean;
+  editTargetId: string | null;
   isSinglePanelView?: boolean;
   hasThreadContextLoadError?: boolean;
   isThreadContextLoading?: boolean;
@@ -99,12 +100,14 @@ type InboxDetailPaneProps = {
   latchedDefaultParentId?: string | null;
   onBack?: () => void;
   onDelete: () => void;
+  onEditTargetChange: React.Dispatch<React.SetStateAction<string | null>>;
   onEditSave: (input: {
     content: string;
     eventId: string;
     mediaTags?: string[][];
     mentionPubkeys?: string[];
   }) => Promise<void>;
+  onRequestEmptyEditDelete: (eventId: string) => void;
   onManageChannel: (channelId: string) => void;
   onOpenContext: (
     channelId: string,
@@ -146,6 +149,7 @@ function InboxMessageDetailPane({
   canOpenChannel,
   canReply,
   disabledReplyReason,
+  editTargetId,
   isDeletingMessage = false,
   isEditingMessage = false,
   isSendingReply = false,
@@ -164,7 +168,9 @@ function InboxMessageDetailPane({
   latchedDefaultParentId = null,
   onBack,
   onDelete,
+  onEditTargetChange,
   onEditSave,
+  onRequestEmptyEditDelete,
   onManageChannel,
   onOpenContext,
   onSendReply,
@@ -177,7 +183,6 @@ function InboxMessageDetailPane({
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const composerWrapperRef = React.useRef<HTMLDivElement | null>(null);
   const [replyTargetId, setReplyTargetId] = React.useState<string | null>(null);
-  const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
   const [isFocusHighlightVisible, setIsFocusHighlightVisible] =
     React.useState(true);
   const [isMembersSidebarOpen, setIsMembersSidebarOpen] = React.useState(false);
@@ -276,7 +281,6 @@ function InboxMessageDetailPane({
   React.useEffect(() => {
     void conversationId;
     setReplyTargetId(null);
-    setEditTargetId(null);
   }, [conversationId]);
 
   React.useEffect(() => {
@@ -452,11 +456,11 @@ function InboxMessageDetailPane({
     setReplyTargetId((currentReplyTargetId) =>
       currentReplyTargetId === message.id ? null : message.id,
     );
-    setEditTargetId(null);
+    onEditTargetChange(null);
     focusComposer();
   };
   const handleSelectEditTarget = (message: InboxDisplayMessage) => {
-    setEditTargetId((currentEditTargetId) =>
+    onEditTargetChange((currentEditTargetId) =>
       currentEditTargetId === message.id ? null : message.id,
     );
     setReplyTargetId(null);
@@ -706,7 +710,7 @@ function InboxMessageDetailPane({
               editTarget={composerEditTarget}
               isSending={isSendingReply || isEditingMessage}
               onCancelEdit={
-                composerEditTarget ? () => setEditTargetId(null) : undefined
+                composerEditTarget ? () => onEditTargetChange(null) : undefined
               }
               onCancelReply={
                 composerReplyTarget ? () => setReplyTargetId(null) : undefined
@@ -715,13 +719,22 @@ function InboxMessageDetailPane({
                 if (!composerEditTarget) {
                   return;
                 }
+                // Empty edits are delete shorthand. Keep edit mode active while
+                // confirmation is open so Cancel returns to the editor.
+                const isEmptyDeletion =
+                  content.trim().length === 0 &&
+                  (mediaTags === undefined || mediaTags.length === 0);
+                if (isEmptyDeletion) {
+                  onRequestEmptyEditDelete(composerEditTarget.id);
+                  return;
+                }
                 await onEditSave({
                   content,
                   eventId: composerEditTarget.id,
                   mediaTags,
                   mentionPubkeys,
                 });
-                setEditTargetId(null);
+                onEditTargetChange(null);
               }}
               onSend={(content, mentionPubkeys, mediaTags) =>
                 onSendReply({

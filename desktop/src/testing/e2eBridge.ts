@@ -8897,19 +8897,34 @@ async function handleSendManagedAgentChannelMessage(
 
 /**
  * Mock the `delete_message` Tauri command. Removes the event from the
- * in-memory mock store so the query-cache invalidation in
- * `useDeleteMessageMutation.onSuccess` (which filters by eventId) finds
- * nothing to keep, and the row disappears from the timeline.
+ * in-memory mock store and records the kind:5 structural event that the real
+ * command publishes so both channel-cache and Inbox structural refresh paths
+ * observe the deletion.
  */
-function handleDeleteMessage(args: {
-  channelId: string;
-  eventId: string;
-}): void {
+function handleDeleteMessage(
+  args: {
+    channelId: string;
+    eventId: string;
+  },
+  config: E2eConfig | undefined,
+): void {
   const history = mockMessages.get(args.channelId);
   if (history) {
     const index = history.findIndex((ev) => ev.id === args.eventId);
     if (index !== -1) history.splice(index, 1);
   }
+
+  const deletion = createMockEvent(
+    KIND_DELETION,
+    "",
+    [
+      ["e", args.eventId],
+      ["h", args.channelId],
+    ],
+    getMockMemberPubkey(config),
+  );
+  recordMockMessage(args.channelId, deletion);
+  emitMockLiveEvent(args.channelId, deletion);
 }
 
 /**
@@ -11859,6 +11874,7 @@ export function maybeInstallE2eTauriMocks() {
       case "delete_message":
         handleDeleteMessage(
           payload as Parameters<typeof handleDeleteMessage>[0],
+          activeConfig,
         );
         return null;
       case "edit_message":
