@@ -1006,13 +1006,11 @@ impl Config {
                 // warn-and-ignore in all other modes (same ignored-var convention
                 // as BUZZ_ADMIN_TOKEN without BUZZ_ADMIN_HOST).
                 let admin_pubkeys_raw = std::env::var("BUZZ_ADMIN_PUBKEYS").ok();
-                if auth_mode != "nip98" {
-                    if admin_pubkeys_raw.is_some() {
-                        tracing::warn!(
-                            "BUZZ_ADMIN_PUBKEYS is set but BUZZ_ADMIN_AUTH is not \"nip98\" — \
-                             the value is ignored"
-                        );
-                    }
+                if auth_mode != "nip98" && admin_pubkeys_raw.is_some() {
+                    tracing::warn!(
+                        "BUZZ_ADMIN_PUBKEYS is set but BUZZ_ADMIN_AUTH is not \"nip98\" — \
+                         the value is ignored"
+                    );
                 }
                 let admin_pubkeys: Vec<String> = if auth_mode == "nip98" {
                     let raw = admin_pubkeys_raw.unwrap_or_default();

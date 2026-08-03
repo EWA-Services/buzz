@@ -39,7 +39,14 @@ fn canonical_url(host: &str, path: &str) -> String {
     format!("{scheme}://{host}{path}")
 }
 
-pub async fn authorize(state: &AppState, headers: &HeaderMap, path: &str) -> Result<(), ApiError> {
+/// `path_and_query` is the full request target including any query string
+/// (e.g. `/reports?status=open&limit=100`). NIP-98 clients sign the full URL;
+/// passing only `uri.path()` causes every query-bearing request to fail auth.
+pub async fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+    path_and_query: &str,
+) -> Result<(), ApiError> {
     let config = state
         .config
         .admin
@@ -51,10 +58,11 @@ pub async fn authorize(state: &AppState, headers: &HeaderMap, path: &str) -> Res
         AdminAuth::Token(token) => authorize_bearer(token, headers)?,
         AdminAuth::Disabled => {}
         AdminAuth::Nip98 { pubkeys } => {
-            // Prefix the handler-received path with the mounted prefix so the
-            // canonical URL matches what NIP-98 clients signed (the full URL as
-            // they see it in the browser, e.g. /api/admin/v1/reports).
-            let full_path = format!("{ADMIN_API_PREFIX}{path}");
+            // Prefix the handler-received path+query with the mounted prefix so
+            // the canonical URL matches what NIP-98 clients signed (the full URL
+            // as seen in the browser, e.g.
+            // /api/admin/v1/reports?status=open&limit=100).
+            let full_path = format!("{ADMIN_API_PREFIX}{path_and_query}");
             authorize_nip98(state, config, headers, &full_path, pubkeys).await?;
         }
     }

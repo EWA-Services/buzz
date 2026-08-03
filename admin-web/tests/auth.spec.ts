@@ -537,3 +537,130 @@ test("probe: nip98 mode with a mocked NIP-07 extension signs requests and render
     expect(h).toMatch(/^Nostr /);
   }
 });
+
+test("nip98 mode: first-401-then-200 retries once and renders the dashboard", async ({
+  page,
+}) => {
+  // Models a credential that is momentarily rejected (clock skew, key
+  // rotation) then accepted on the second attempt.
+  let signCount = 0;
+  await page.addInitScript(() => {
+    (window as Window & { nostr?: unknown }).nostr = {
+      signEvent: async (event: {
+        kind: number;
+        created_at: number;
+        tags: string[][];
+        content: string;
+      }) => ({
+        ...event,
+        id: "a".repeat(64),
+        pubkey: "b".repeat(64),
+        sig: "c".repeat(128),
+      }),
+    };
+  });
+
+  const authCalls: string[] = [];
+  await page.route("**/api/admin/v1/**", async (route) => {
+    const headers = route.request().headers();
+    if (!headers.authorization) {
+      // Probe — announce nip98 mode.
+      await route.fulfill({
+        status: 401,
+        headers: { "www-authenticate": "Nostr" },
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "unauthorized", message: "nip98 required" },
+        }),
+      });
+      return;
+    }
+    authCalls.push(headers.authorization);
+    signCount++;
+    if (signCount === 1) {
+      // First authenticated attempt → reject.
+      await route.fulfill({
+        status: 401,
+        headers: { "www-authenticate": "Nostr" },
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "unauthorized", message: "rejected" },
+        }),
+      });
+    } else {
+      // Second attempt → accept.
+      await route.fulfill({ contentType: "application/json", body: "[]" });
+    }
+  });
+
+  await page.goto("/reports");
+
+  // The retry should succeed. Wait for network to settle (both attempts
+  // complete) before asserting the authCalls count.
+  await page.waitForLoadState("networkidle");
+  // Exactly two distinct Nostr credentials were sent (one per attempt).
+  expect(authCalls).toHaveLength(2);
+  for (const h of authCalls) {
+    expect(h).toMatch(/^Nostr /);
+  }
+});
+
+test("nip98 mode: persistent 401 surfaces error after exactly one retry", async ({
+  page,
+}) => {
+  // Every authenticated request returns 401. The SPA must attempt exactly
+  // two requests (first attempt + one retry) and then surface the error —
+  // never a third attempt.
+  await page.addInitScript(() => {
+    (window as Window & { nostr?: unknown }).nostr = {
+      signEvent: async (event: {
+        kind: number;
+        created_at: number;
+        tags: string[][];
+        content: string;
+      }) => ({
+        ...event,
+        id: "a".repeat(64),
+        pubkey: "b".repeat(64),
+        sig: "c".repeat(128),
+      }),
+    };
+  });
+
+  const authCalls: string[] = [];
+  await page.route("**/api/admin/v1/**", async (route) => {
+    const headers = route.request().headers();
+    if (!headers.authorization) {
+      await route.fulfill({
+        status: 401,
+        headers: { "www-authenticate": "Nostr" },
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "unauthorized", message: "nip98 required" },
+        }),
+      });
+      return;
+    }
+    authCalls.push(headers.authorization);
+    await route.fulfill({
+      status: 401,
+      headers: { "www-authenticate": "Nostr" },
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "unauthorized", message: "rejected" },
+      }),
+    });
+  });
+
+  await page.goto("/reports");
+
+  // After the retry fails, the error state renders. The StateView shows
+  // "Could not load data" inside a role=alert region.
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Could not load data" }),
+  ).toBeVisible();
+  // Exactly two Nostr credentials sent — no third attempt.
+  await page.waitForLoadState("networkidle");
+  expect(authCalls).toHaveLength(2);
+});

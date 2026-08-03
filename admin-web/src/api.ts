@@ -52,29 +52,39 @@ interface Nostr98 {
 /// - `disabled` mode: no credential
 ///
 /// A 401 in token mode clears the stored token so the prompt re-appears.
-/// A 401 in nip98 mode re-signs once (handles key rotation) then surfaces
-/// the error — no infinite loop.
+/// A 401 in nip98 mode re-signs once (handles key rotation / clock skew)
+/// and retries the request exactly once; a second 401 surfaces the error —
+/// no infinite loop.
 async function send(
   path: string,
   accept: string,
   authMode: AuthMode,
 ): Promise<Response> {
-  const headers: Record<string, string> = { accept };
-  if (authMode === "token") {
-    const token = getToken();
-    if (token) headers.authorization = `Bearer ${token}`;
-  } else if (authMode === "nip98") {
-    const url = `${location.protocol}//${location.host}${PREFIX}${path}`;
-    headers.authorization = await signNip98(url, "GET");
-  }
-  const response = await fetch(`${PREFIX}${path}`, {
-    credentials: "same-origin",
-    headers,
-  });
+  const doRequest = async (extraHeaders?: Record<string, string>) => {
+    const headers: Record<string, string> = { accept, ...extraHeaders };
+    if (authMode === "token") {
+      const token = getToken();
+      if (token) headers.authorization = `Bearer ${token}`;
+    } else if (authMode === "nip98") {
+      const url = `${location.protocol}//${location.host}${PREFIX}${path}`;
+      headers.authorization = await signNip98(url, "GET");
+    }
+    return fetch(`${PREFIX}${path}`, { credentials: "same-origin", headers });
+  };
+
+  let response = await doRequest();
+
   if (response.status === 401) {
     if (authMode === "token") {
       clearToken();
+    } else if (authMode === "nip98") {
+      // Re-sign with a fresh event and retry exactly once (handles clock
+      // skew or key rotation). A second 401 surfaces the error below.
+      response = await doRequest();
     }
+  }
+
+  if (response.status === 401) {
     throw new ApiFailure(401, "The admin credential was rejected.");
   }
   if (!response.ok) {

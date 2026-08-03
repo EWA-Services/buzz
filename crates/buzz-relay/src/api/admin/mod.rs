@@ -96,7 +96,13 @@ async fn reports(
     headers: HeaderMap,
     Query(query): Query<ReportQuery>,
 ) -> Result<Json<Vec<buzz_db::admin_moderation::AdminReport>>, ApiError> {
-    authorize(&state, &headers, uri.path()).await?;
+    authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+    )
+    .await?;
     validate(
         query.status.as_deref(),
         &["open", "resolved", "dismissed", "escalated"],
@@ -129,7 +135,13 @@ async fn report_detail(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminReportDetail>, ApiError> {
-    authorize(&state, &headers, uri.path()).await?;
+    authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+    )
+    .await?;
     state
         .db
         .admin_get_report(id)
@@ -155,7 +167,13 @@ async fn feedback(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<FeedbackSummary>>, ApiError> {
-    authorize(&state, &headers, uri.path()).await?;
+    authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+    )
+    .await?;
     let items = state
         .db
         .admin_list_feedback(100)
@@ -183,7 +201,13 @@ async fn feedback_detail(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminFeedback>, ApiError> {
-    authorize(&state, &headers, uri.path()).await?;
+    authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+    )
+    .await?;
     state
         .db
         .admin_get_feedback(id)
@@ -198,7 +222,13 @@ async fn feedback_attachment(
     headers: HeaderMap,
     Path((id, sha256)): Path<(Uuid, String)>,
 ) -> Result<Response, ApiError> {
-    authorize(&state, &headers, uri.path()).await?;
+    authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+    )
+    .await?;
     if !is_sha256(&sha256) {
         return Err(ApiError::not_found());
     }
@@ -1129,5 +1159,50 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── Query-bearing NIP-98 requests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn nip98_mode_query_bearing_request_signed_with_full_url_is_served() {
+        // The SPA's primary reports request is /reports?status=open&limit=100.
+        // The signed u-tag must include the query; the relay must verify against
+        // the full path-and-query, not just the path component.
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&keys, "/reports?status=open&limit=100");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports?status=open&limit=100")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        // 200 (DB returns empty list) — not 401.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_path_only_event_for_query_bearing_request_is_401() {
+        // A credential signed for just /reports must not authenticate a
+        // request sent to /reports?status=open&limit=100: the u-tag would
+        // not match the full canonical URL.
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&keys, "/reports");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports?status=open&limit=100")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
