@@ -4,6 +4,7 @@ import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { ComposerDockBackdrop } from "@/features/messages/ui/ComposerDockBackdrop";
+import { ComposerUploadProgressOverlay } from "@/features/messages/ui/ComposerUploadProgressOverlay";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { ComposerTimeoutBanner } from "@/features/moderation/ui/ComposerTimeoutBanner";
 import { useTimeoutState } from "@/features/moderation/lib/timeoutStore";
@@ -733,6 +734,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               data-testid="channel-composer-overlay"
               ref={composerWrapperRef}
             >
+              <ComposerUploadProgressOverlay />
               <div
                 className={cn(
                   "composer-dock composer-overlay-corner-masks relative pointer-events-auto",
@@ -792,7 +794,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                               : "Select a channel"
                   }
                   showTopBorder={false}
-                  showBackgroundUploadProgress
                 />
                 {/* The activity accessory is anchored in the dock's reserved
                     bottom rail, so fading it cannot change the observed

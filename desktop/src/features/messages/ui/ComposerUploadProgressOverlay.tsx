@@ -1,0 +1,19 @@
+import {
+  cancelBackgroundMediaUploads,
+  useBackgroundMediaUpload,
+} from "@/features/messages/lib/backgroundMediaUploadStore";
+import { ComposerUploadProgressPill } from "@/features/messages/ui/ComposerUploadProgressPill";
+
+export function ComposerUploadProgressOverlay() {
+  const backgroundUpload = useBackgroundMediaUpload();
+
+  return (
+    <div className="pointer-events-auto">
+      <ComposerUploadProgressPill
+        isUploading={backgroundUpload.isUploading}
+        onCancel={cancelBackgroundMediaUploads}
+        percentage={backgroundUpload.percentage}
+      />
+    </div>
+  );
+}

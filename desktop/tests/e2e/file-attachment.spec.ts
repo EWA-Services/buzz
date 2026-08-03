@@ -135,6 +135,61 @@ test("canceling a background upload prevents the message from publishing", async
   await expect(page.getByTestId("file-card")).toHaveCount(0);
 });
 
+test("upload progress floats above the dock and lifts Jump to latest", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const e2e = (
+      window as Window & {
+        __BUZZ_E2E__?: { mock?: { uploadDelayMs?: number } };
+      }
+    ).__BUZZ_E2E__;
+    if (e2e?.mock) e2e.mock.uploadDelayMs = 2_000;
+  });
+  await page.getByTestId("channel-deep-history").click();
+
+  const timeline = page.getByTestId("message-timeline");
+  await expect(timeline.locator("[data-message-id]").first()).toBeVisible();
+  await timeline.evaluate((element) => {
+    element.scrollTop = Math.max(500, element.scrollHeight / 2);
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  const jumpToLatest = page.getByTestId("message-scroll-to-latest");
+  await expect(jumpToLatest).toBeVisible();
+  const restingBox = await jumpToLatest.boundingBox();
+
+  await chooseQuarterlyReport(page);
+  await page.getByTestId("send-message").click();
+  const uploadMotion = page.getByTestId("composer-upload-progress-motion");
+  await expect(uploadMotion).toBeVisible();
+  await timeline.evaluate((element) => {
+    element.scrollTop = Math.max(500, element.scrollHeight / 2);
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(jumpToLatest).toBeVisible();
+  await page.waitForTimeout(250);
+
+  const [uploadBox, dockBackdropBox, liftedBox] = await Promise.all([
+    uploadMotion.boundingBox(),
+    page.getByTestId("composer-dock-backdrop").boundingBox(),
+    jumpToLatest.boundingBox(),
+  ]);
+  expect(restingBox).not.toBeNull();
+  expect(uploadBox).not.toBeNull();
+  expect(dockBackdropBox).not.toBeNull();
+  expect(liftedBox).not.toBeNull();
+  expect((dockBackdropBox?.y ?? 0) + 1).toBeGreaterThanOrEqual(
+    (uploadBox?.y ?? 0) + (uploadBox?.height ?? 0),
+  );
+  expect((liftedBox?.y ?? 0) + (liftedBox?.height ?? 0)).toBeLessThanOrEqual(
+    uploadBox?.y ?? 0,
+  );
+  expect(liftedBox?.y ?? 0).toBeLessThan((restingBox?.y ?? 0) - 10);
+
+  await page.getByTestId("composer-upload-cancel").click();
+});
+
 test("dropping a file on the channel column attaches it to the composer", async ({
   page,
 }) => {
