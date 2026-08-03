@@ -10,73 +10,11 @@ import {
   writeObservedUnreadToStorage,
 } from "./observedUnreadStorage.ts";
 import { READ_STATE_HORIZON_SECONDS } from "./readState/readStateFormat.ts";
-
-// ── localStorage mock infrastructure ─────────────────────────────────────────
-
-function makeLocalStorage() {
-  const store = new Map();
-  return {
-    get length() {
-      return store.size;
-    },
-    key: (i) => [...store.keys()][i] ?? null,
-    getItem: (key) => store.get(key) ?? null,
-    setItem: (key, value) => store.set(key, value),
-    removeItem: (key) => store.delete(key),
-    clear: () => store.clear(),
-    _store: store,
-  };
-}
-
-function makeIsolatedStorage() {
-  const ls = makeLocalStorage();
-  const prevWindow = globalThis.window;
-  if (typeof globalThis.window === "undefined") {
-    globalThis.window = {};
-  }
-  const prevLs = globalThis.window.localStorage;
-  globalThis.window.localStorage = ls;
-  return {
-    ls,
-    restore: () => {
-      if (prevWindow === undefined) {
-        delete globalThis.window;
-      } else {
-        globalThis.window.localStorage = prevLs;
-      }
-    },
-  };
-}
-
-function makeEvent({
-  id = "event-1",
-  createdAt = 1_000_000,
-  rootId = "root-1",
-  highPriority = false,
-  countsTowardBadge = true,
-  countsTowardAppBadge = false,
-} = {}) {
-  return {
-    id,
-    createdAt,
-    rootId,
-    highPriority,
-    countsTowardBadge,
-    countsTowardAppBadge,
-  };
-}
-
-function makeEventsByChannel(entries) {
-  const map = new Map();
-  for (const [channelId, events] of entries) {
-    const byId = new Map();
-    for (const e of events) {
-      byId.set(e.id, e);
-    }
-    map.set(channelId, byId);
-  }
-  return map;
-}
+import {
+  makeIsolatedStorage,
+  makeObservedEvent,
+  makeEventsByChannel,
+} from "./observedUnreadTestHarness.mjs";
 
 const NOW_SECONDS = Math.floor(Date.now() / 1_000);
 const FRESH_AT = NOW_SECONDS - 100;
@@ -112,7 +50,7 @@ test("round-trip: events written are readable and intact", () => {
   try {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
-    const event = makeEvent({ id: "e1", createdAt: FRESH_AT });
+    const event = makeObservedEvent({ id: "e1", createdAt: FRESH_AT });
     const map = makeEventsByChannel([["channel-1", [event]]]);
 
     writeObservedUnreadToStorage(pubkey, relay, map);
@@ -125,7 +63,7 @@ test("round-trip: events written are readable and intact", () => {
     const e = ch.get("e1");
     assert.equal(e.id, "e1");
     assert.equal(e.createdAt, FRESH_AT);
-    assert.equal(e.rootId, "root-1");
+    assert.equal(e.rootId, "root-e1");
   } finally {
     restore();
   }
@@ -138,7 +76,7 @@ test("round-trip: relay A rows not readable under relay B", () => {
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
     const map = makeEventsByChannel([
-      ["channel-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
+      ["channel-1", [makeObservedEvent({ id: "e1", createdAt: FRESH_AT })]],
     ]);
 
     writeObservedUnreadToStorage(pubkey, relayA, map);
@@ -185,7 +123,7 @@ test("read discards malformed events and keeps valid ones", () => {
   const { restore } = makeIsolatedStorage();
   try {
     const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-    const valid = makeEvent({ id: "e-ok", createdAt: FRESH_AT });
+    const valid = makeObservedEvent({ id: "e-ok", createdAt: FRESH_AT });
     window.localStorage.setItem(
       key,
       JSON.stringify({
@@ -236,8 +174,8 @@ test("write and read prune stale events; write removes key when all stale", () =
         [
           "ch-1",
           [
-            makeEvent({ id: "stale", createdAt: STALE_AT }),
-            makeEvent({ id: "fresh", createdAt: FRESH_AT }),
+            makeObservedEvent({ id: "stale", createdAt: STALE_AT }),
+            makeObservedEvent({ id: "fresh", createdAt: FRESH_AT }),
           ],
         ],
       ]),
@@ -253,8 +191,8 @@ test("write and read prune stale events; write removes key when all stale", () =
         updatedAt: Date.now(),
         eventsByChannel: {
           "ch-r": [
-            makeEvent({ id: "stale-r", createdAt: STALE_AT }),
-            makeEvent({ id: "fresh-r", createdAt: FRESH_AT }),
+            makeObservedEvent({ id: "stale-r", createdAt: STALE_AT }),
+            makeObservedEvent({ id: "fresh-r", createdAt: FRESH_AT }),
           ],
         },
       }),
@@ -268,7 +206,7 @@ test("write and read prune stale events; write removes key when all stale", () =
       pubkey,
       relay,
       makeEventsByChannel([
-        ["ch-1", [makeEvent({ id: "stale2", createdAt: STALE_AT })]],
+        ["ch-1", [makeObservedEvent({ id: "stale2", createdAt: STALE_AT })]],
       ]),
     );
     assert.equal(
@@ -291,7 +229,7 @@ test("write caps per channel at 1000 and globally at 5000 keeping newest", () =>
 
     // Per-channel: 1100 events → capped to 1000, oldest evicted.
     const events = Array.from({ length: 1100 }, (_, i) =>
-      makeEvent({ id: `e-${i}`, createdAt: FRESH_AT + i }),
+      makeObservedEvent({ id: `e-${i}`, createdAt: FRESH_AT + i }),
     );
     writeObservedUnreadToStorage(
       pubkey,
@@ -307,7 +245,10 @@ test("write caps per channel at 1000 and globally at 5000 keeping newest", () =>
     const entries = Array.from({ length: 6 }, (_, c) => [
       `channel-${c}`,
       Array.from({ length: 1000 }, (_, i) =>
-        makeEvent({ id: `ch${c}-e${i}`, createdAt: FRESH_AT + c * 10000 + i }),
+        makeObservedEvent({
+          id: `ch${c}-e${i}`,
+          createdAt: FRESH_AT + c * 10000 + i,
+        }),
       ),
     ]);
     writeObservedUnreadToStorage(pubkey, relay, makeEventsByChannel(entries));
@@ -331,14 +272,14 @@ test("clearObservedUnreadStorage: removes scope bucket without affecting others"
       "pk1",
       relayA,
       makeEventsByChannel([
-        ["ch-a", [makeEvent({ id: "ea", createdAt: FRESH_AT })]],
+        ["ch-a", [makeObservedEvent({ id: "ea", createdAt: FRESH_AT })]],
       ]),
     );
     writeObservedUnreadToStorage(
       "pk1",
       relayB,
       makeEventsByChannel([
-        ["ch-b", [makeEvent({ id: "eb", createdAt: FRESH_AT })]],
+        ["ch-b", [makeObservedEvent({ id: "eb", createdAt: FRESH_AT })]],
       ]),
     );
 
@@ -365,12 +306,12 @@ test("deriveLatestByChannel: max createdAt per channel, empty map returns empty"
     [
       "ch-1",
       [
-        makeEvent({ id: "e1", createdAt: 100 }),
-        makeEvent({ id: "e2", createdAt: 200 }),
-        makeEvent({ id: "e3", createdAt: 150 }),
+        makeObservedEvent({ id: "e1", createdAt: 100 }),
+        makeObservedEvent({ id: "e2", createdAt: 200 }),
+        makeObservedEvent({ id: "e3", createdAt: 150 }),
       ],
     ],
-    ["ch-2", [makeEvent({ id: "e4", createdAt: 50 })]],
+    ["ch-2", [makeObservedEvent({ id: "e4", createdAt: 50 })]],
   ]);
   const latest = deriveLatestByChannel(map);
   assert.equal(latest.get("ch-1"), 200);
@@ -389,8 +330,12 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
   try {
     const rootA = "root-a";
     const rootB = "root-b";
-    const eventA = makeEvent({ id: "eA", createdAt: FRESH_AT, rootId: rootA });
-    const eventB = makeEvent({
+    const eventA = makeObservedEvent({
+      id: "eA",
+      createdAt: FRESH_AT,
+      rootId: rootA,
+    });
+    const eventB = makeObservedEvent({
       id: "eB",
       createdAt: FRESH_AT + 10,
       rootId: rootB,
@@ -448,8 +393,8 @@ test("scope-isolation: A rows visible in A, absent in B, restored on A again", (
     const relayB = "wss://relay-b.example.com";
     const pubkey = "pk1";
 
-    const eA = makeEvent({ id: "eA", createdAt: FRESH_AT });
-    const eB = makeEvent({ id: "eB", createdAt: FRESH_AT + 1 });
+    const eA = makeObservedEvent({ id: "eA", createdAt: FRESH_AT });
+    const eB = makeObservedEvent({ id: "eB", createdAt: FRESH_AT + 1 });
 
     writeObservedUnreadToStorage(
       pubkey,
@@ -494,7 +439,7 @@ test("scope-isolation: a late A-scope write does not overwrite B's bucket", () =
       pubkey,
       relayB,
       makeEventsByChannel([
-        ["ch-b", [makeEvent({ id: "eB", createdAt: FRESH_AT })]],
+        ["ch-b", [makeObservedEvent({ id: "eB", createdAt: FRESH_AT })]],
       ]),
     );
 
@@ -503,7 +448,7 @@ test("scope-isolation: a late A-scope write does not overwrite B's bucket", () =
       pubkey,
       relayA,
       makeEventsByChannel([
-        ["ch-a", [makeEvent({ id: "eA", createdAt: FRESH_AT })]],
+        ["ch-a", [makeObservedEvent({ id: "eA", createdAt: FRESH_AT })]],
       ]),
     );
 
@@ -540,7 +485,7 @@ test("writeObservedUnreadToStorage returns false when localStorage throws", () =
   };
   try {
     const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
+      ["ch-1", [makeObservedEvent({ id: "e1", createdAt: FRESH_AT })]],
     ]);
     const result = writeObservedUnreadToStorage(
       "pk1",

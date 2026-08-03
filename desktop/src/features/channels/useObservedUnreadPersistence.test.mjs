@@ -10,250 +10,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// ── DOM shim ──────────────────────────────────────────────────────────────────
+import {
+  installDOMShim,
+  installFreshStorage,
+  makeObservedEvent,
+  mountHook,
+} from "./observedUnreadTestHarness.mjs";
 
-function installDOMShim() {
-  class ET {
-    constructor() {
-      this._ls = {};
-    }
-    addEventListener(t, fn) {
-      this._ls[t] ??= [];
-      this._ls[t].push(fn);
-    }
-    removeEventListener(t, fn) {
-      this._ls[t] = (this._ls[t] ?? []).filter((f) => f !== fn);
-    }
-    dispatchEvent(e) {
-      for (const fn of this._ls[e.type] ?? []) fn(e);
-      return true;
-    }
-  }
-  class Node extends ET {
-    constructor(tag) {
-      super();
-      this.tagName = tag;
-      this.children = [];
-      this.childNodes = [];
-      this.style = {};
-      this.nodeType = 1;
-      this.parentNode = null;
-    }
-    get ownerDocument() {
-      return globalThis.document;
-    }
-    get firstChild() {
-      return this.children[0] ?? null;
-    }
-    get lastChild() {
-      return this.children[this.children.length - 1] ?? null;
-    }
-    get nextSibling() {
-      return null;
-    }
-    get nodeValue() {
-      return null;
-    }
-    appendChild(c) {
-      this.children.push(c);
-      this.childNodes.push(c);
-      c.parentNode = this;
-      return c;
-    }
-    removeChild(c) {
-      this.children = this.children.filter((x) => x !== c);
-      this.childNodes = this.childNodes.filter((x) => x !== c);
-      return c;
-    }
-    insertBefore(n, r) {
-      if (!r) return this.appendChild(n);
-      const i = this.children.indexOf(r);
-      if (i < 0) return this.appendChild(n);
-      this.children.splice(i, 0, n);
-      this.childNodes.splice(i, 0, n);
-      n.parentNode = this;
-      return n;
-    }
-    contains(n) {
-      return this === n || this.children.some((c) => c?.contains?.(n));
-    }
-  }
-  class Doc extends ET {
-    constructor() {
-      super();
-      this.nodeType = 9;
-    }
-    createElement(t) {
-      return new Node(t);
-    }
-    createTextNode(v) {
-      const n = new Node("#text");
-      n.nodeType = 3;
-      n.nodeValue = v;
-      return n;
-    }
-    createComment(v) {
-      const n = new Node("#comment");
-      n.nodeType = 8;
-      n.nodeValue = v;
-      return n;
-    }
-    get activeElement() {
-      return null;
-    }
-    contains(n) {
-      return n != null;
-    }
-  }
-
-  // Window-level event target for pagehide.
-  const windowET = new ET();
-
-  globalThis.document = new Doc();
-  globalThis.HTMLIFrameElement = Node;
-  globalThis.HTMLElement = Node;
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  process.env.IS_REACT_ACT_ENVIRONMENT = "true";
-  if (typeof globalThis.window === "undefined") {
-    Object.defineProperty(globalThis, "window", {
-      value: globalThis,
-      configurable: true,
-    });
-  }
-  // Expose window event target methods (used by pagehide listener).
-  globalThis.addEventListener = windowET.addEventListener.bind(windowET);
-  globalThis.removeEventListener = windowET.removeEventListener.bind(windowET);
-  globalThis.dispatchEvent = windowET.dispatchEvent.bind(windowET);
-  globalThis.MutationObserver = class {
-    observe() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  };
-  globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
-}
-
+// DOM shim must be installed before React is imported (happens inside mountHook
+// on first call; the harness imports React at module parse time, so shim first).
 installDOMShim();
-
-// ── localStorage shim ─────────────────────────────────────────────────────────
-
-function makeLocalStorage() {
-  const store = new Map();
-  return {
-    get length() {
-      return store.size;
-    },
-    key: (i) => [...store.keys()][i] ?? null,
-    getItem: (key) => store.get(key) ?? null,
-    setItem: (key, value) => store.set(key, value),
-    removeItem: (key) => store.delete(key),
-    clear: () => store.clear(),
-    _store: store,
-  };
-}
-
-function installFreshStorage() {
-  const ls = makeLocalStorage();
-  Object.defineProperty(globalThis, "localStorage", {
-    get: () => ls,
-    configurable: true,
-  });
-  return ls;
-}
-
-// Install once at module level.
+// Install a module-level localStorage so React's scheduler doesn't choke.
 installFreshStorage();
 
-// ── Imports (after shims) ─────────────────────────────────────────────────────
-
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { act } from "react";
-
-import { useObservedUnreadPersistence } from "./useObservedUnreadPersistence.ts";
 import {
   readObservedUnreadFromStorage,
   writeObservedUnreadToStorage,
 } from "./observedUnreadStorage.ts";
+import { act } from "react";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const PUBKEY = "aabbcc";
 const RELAY = "wss://relay.example.com";
 // Use a recent timestamp so age-pruning doesn't discard events before writing.
-// 7-day horizon: events must be newer than (now - 604800 seconds).
 const NOW_S = Math.floor(Date.now() / 1_000);
-
-function makeEvent(id, _channelId, createdAt = NOW_S) {
-  return {
-    id,
-    createdAt,
-    rootId: `root-${id}`,
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
-}
 
 function makeRefs() {
   const eventsRef = { current: new Map() };
   const latestRef = { current: new Map() };
-  // Seed an event in channel-1 with a recent timestamp.
   const inner = new Map();
-  inner.set("evt-1", makeEvent("evt-1", "channel-1", NOW_S));
+  inner.set("evt-1", makeObservedEvent({ id: "evt-1", createdAt: NOW_S }));
   eventsRef.current.set("channel-1", inner);
   latestRef.current.set("channel-1", NOW_S);
   return { eventsRef, latestRef };
-}
-
-/**
- * Mounts useObservedUnreadPersistence in a harness component and returns
- * controls to inspect and manipulate the hook's API.
- */
-async function mountHook(props, refs) {
-  const apiRef = { current: null };
-
-  function Harness({
-    pubkey,
-    relay,
-    isReady,
-    readStateVersion,
-    getTs,
-    getOwn,
-    onPruned,
-  }) {
-    apiRef.current = useObservedUnreadPersistence(
-      pubkey,
-      relay,
-      isReady,
-      readStateVersion,
-      getTs,
-      getOwn,
-      refs.eventsRef,
-      refs.latestRef,
-      { onPruned: onPruned ?? (() => {}) },
-    );
-    return null;
-  }
-
-  const root = createRoot(document.createElement("div"));
-  const render = async (p) => {
-    await act(async () => {
-      root.render(React.createElement(Harness, p));
-    });
-  };
-  await render(props);
-
-  return {
-    get api() {
-      return apiRef.current;
-    },
-    render,
-    unmount: async () => {
-      await act(async () => root.unmount());
-    },
-  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -275,7 +65,10 @@ test("pagehide flush: event recorded within debounce window survives reload", as
 
   // Add a new event after mount (simulates a live message arriving mid-debounce).
   const newInner = new Map(refs.eventsRef.current.get("channel-2") ?? []);
-  newInner.set("evt-new", makeEvent("evt-new", "channel-2", NOW_S + 1));
+  newInner.set(
+    "evt-new",
+    makeObservedEvent({ id: "evt-new", createdAt: NOW_S + 1 }),
+  );
   refs.eventsRef.current.set("channel-2", newInner);
   refs.latestRef.current.set("channel-2", NOW_S + 1);
 
@@ -312,7 +105,10 @@ test("unmount with pending write flushes before teardown", async () => {
   );
 
   const inner = new Map();
-  inner.set("evt-unmount", makeEvent("evt-unmount", "ch-u", NOW_S + 2));
+  inner.set(
+    "evt-unmount",
+    makeObservedEvent({ id: "evt-unmount", createdAt: NOW_S + 2 }),
+  );
   refs.eventsRef.current.set("ch-u", inner);
   harness.api.schedule(harness.api.currentScope);
 
@@ -365,10 +161,10 @@ test("removeChannel replaces pending snapshot so sibling channel B survives relo
   // must replace the snapshot so ch2 survives the next pagehide flush.
   const seedMap = new Map();
   const ch1 = new Map();
-  ch1.set("evt-1", makeEvent("evt-1", "channel-1", NOW_S));
+  ch1.set("evt-1", makeObservedEvent({ id: "evt-1", createdAt: NOW_S }));
   seedMap.set("channel-1", ch1);
   const ch2 = new Map();
-  ch2.set("evt-2", makeEvent("evt-2", "channel-2", NOW_S + 1));
+  ch2.set("evt-2", makeObservedEvent({ id: "evt-2", createdAt: NOW_S + 1 }));
   seedMap.set("channel-2", ch2);
   writeObservedUnreadToStorage(PUBKEY, RELAY, seedMap);
 
@@ -438,46 +234,31 @@ test("marker prune: thread and channel markers prune covered events; sibling cha
   // channel-1: evt-a covered by thread:root-a marker; evt-b NOT covered (newer).
   // channel-a: two events covered by channel marker at NOW_S-5.
   // channel-b: event at NOW_S+10 (survives).
-  const evtA = {
+  const evtA = makeObservedEvent({
     id: "evt-a",
     createdAt: NOW_S - 10,
     rootId: "root-a",
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
-  const evtB = {
+  });
+  const evtB = makeObservedEvent({
     id: "evt-b",
     createdAt: NOW_S + 10,
     rootId: "root-b",
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
-  const evtOld = {
+  });
+  const evtOld = makeObservedEvent({
     id: "evt-old",
     createdAt: NOW_S - 20,
     rootId: "root-old",
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
-  const evtMid = {
+  });
+  const evtMid = makeObservedEvent({
     id: "evt-mid",
     createdAt: NOW_S - 10,
     rootId: "root-mid",
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
-  const evtSurvivor = {
+  });
+  const evtSurvivor = makeObservedEvent({
     id: "evt-survivor",
     createdAt: NOW_S + 10,
     rootId: "root-sv",
-    highPriority: false,
-    countsTowardBadge: true,
-    countsTowardAppBadge: false,
-  };
+  });
 
   const stored = new Map();
   const ch1 = new Map();
@@ -596,7 +377,12 @@ test("A→B scope switch: pending A-timer is cancelled by flush, A data persiste
     PUBKEY_AT,
     RELAY_AT,
     new Map([
-      ["ch-at", new Map([["evt-at", makeEvent("evt-at", "ch-at", NOW_S)]])],
+      [
+        "ch-at",
+        new Map([
+          ["evt-at", makeObservedEvent({ id: "evt-at", createdAt: NOW_S })],
+        ]),
+      ],
     ]),
   );
 
@@ -636,7 +422,10 @@ test("A→B scope switch: pending A-timer is cancelled by flush, A data persiste
 
   // B schedules and flushes independently.
   const chBT = new Map();
-  chBT.set("evt-bt", makeEvent("evt-bt", "ch-bt", NOW_S + 300));
+  chBT.set(
+    "evt-bt",
+    makeObservedEvent({ id: "evt-bt", createdAt: NOW_S + 300 }),
+  );
   refsAT.eventsRef.current.set("ch-bt", chBT);
   refsAT.latestRef.current.set("ch-bt", NOW_S + 300);
   harness.api.schedule(harness.api.currentScope);
@@ -653,13 +442,20 @@ test("A→B scope switch: pending A-timer is cancelled by flush, A data persiste
   await harness.unmount();
 });
 
-test("stale clearAll from scope A rejects after scope B loads (scope fence enforced)", async () => {
+test("stale scope-A operations (clearAll + removeChannel) both reject after scope B loads (scope fence enforced)", async () => {
+  // Single test covering both fenced operations; each assertion names the
+  // operation so a failure pinpoints which one broke.
   installFreshStorage();
 
   const seedA = new Map([
     [
       "channel-seed",
-      new Map([["evt-seed-a", makeEvent("evt-seed-a", "channel-seed", NOW_S)]]),
+      new Map([
+        [
+          "evt-seed-a",
+          makeObservedEvent({ id: "evt-seed-a", createdAt: NOW_S }),
+        ],
+      ]),
     ],
   ]);
   writeObservedUnreadToStorage(PUBKEY, RELAY, seedA);
@@ -680,67 +476,29 @@ test("stale clearAll from scope A rejects after scope B loads (scope fence enfor
 
   harness.api.schedule(harness.api.currentScope);
   const staleClearAll = harness.api.clearAll;
+  const staleRemoveChannel = harness.api.removeChannel;
 
-  const PUBKEY_B = "pubkey-b2";
-  const RELAY_B = "wss://relay-b2.example.com";
-  await harness.render({ ...propsA, pubkey: PUBKEY_B, relay: RELAY_B });
-
-  const storedA_before = readObservedUnreadFromStorage(PUBKEY, RELAY);
-  assert.ok(storedA_before !== null, "A's bucket must survive scope switch");
-
-  staleClearAll();
-
-  assert.deepEqual(
-    readObservedUnreadFromStorage(PUBKEY, RELAY),
-    storedA_before,
-    "stale clearAll from scope A must not delete A's bucket after scope B loads",
-  );
-
-  await harness.unmount();
-});
-
-test("stale removeChannel from scope A rejects after scope B loads (scope fence enforced)", async () => {
-  installFreshStorage();
-
-  const seedA = new Map([
-    [
-      "channel-seed",
-      new Map([["evt-seed-a", makeEvent("evt-seed-a", "channel-seed", NOW_S)]]),
-    ],
-  ]);
-  writeObservedUnreadToStorage(PUBKEY, RELAY, seedA);
-
-  const refsA = {
-    eventsRef: { current: new Map() },
-    latestRef: { current: new Map() },
-  };
-  const propsA = {
-    pubkey: PUBKEY,
-    relay: RELAY,
-    isReady: true,
-    readStateVersion: 0,
-    getTs: () => null,
-    getOwn: () => null,
-  };
-  const harness = await mountHook(propsA, refsA);
-
-  harness.api.schedule(harness.api.currentScope);
-
-  const PUBKEY_B = "pubkey-b3";
-  const RELAY_B = "wss://relay-b3.example.com";
+  const PUBKEY_B = "pubkey-b-fence";
+  const RELAY_B = "wss://relay-b-fence.example.com";
   writeObservedUnreadToStorage(
     PUBKEY_B,
     RELAY_B,
     new Map([
       [
         "channel-b",
-        new Map([["evt-seed-b", makeEvent("evt-seed-b", "channel-b", NOW_S)]]),
+        new Map([
+          [
+            "evt-seed-b",
+            makeObservedEvent({ id: "evt-seed-b", createdAt: NOW_S }),
+          ],
+        ]),
       ],
     ]),
   );
-
-  const staleRemoveChannel = harness.api.removeChannel;
   await harness.render({ ...propsA, pubkey: PUBKEY_B, relay: RELAY_B });
+
+  const storedA_before = readObservedUnreadFromStorage(PUBKEY, RELAY);
+  assert.ok(storedA_before !== null, "A's bucket must survive scope switch");
 
   const storedB_before = readObservedUnreadFromStorage(PUBKEY_B, RELAY_B);
   assert.ok(
@@ -748,8 +506,16 @@ test("stale removeChannel from scope A rejects after scope B loads (scope fence 
     "B's bucket must be in storage after scope switch",
   );
 
-  staleRemoveChannel("channel-b");
+  // stale clearAll must not delete A's bucket.
+  staleClearAll();
+  assert.deepEqual(
+    readObservedUnreadFromStorage(PUBKEY, RELAY),
+    storedA_before,
+    "stale clearAll from scope A must not delete A's bucket after scope B loads",
+  );
 
+  // stale removeChannel must not modify B's bucket.
+  staleRemoveChannel("channel-b");
   assert.deepEqual(
     readObservedUnreadFromStorage(PUBKEY_B, RELAY_B),
     storedB_before,
