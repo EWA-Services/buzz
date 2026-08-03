@@ -479,24 +479,28 @@ class ComposeBar extends HookConsumerWidget {
       }
 
       final queuedAttachments = List<_PendingAttachment>.of(attachments.value);
+      final channelActions = ref.read(channelActionsProvider);
+
+      Future<void> addMentionedNonMembers() async {
+        if (nonMemberAgentPubkeys.isNotEmpty) {
+          await channelActions.addMembers(
+            channelId: channelId,
+            pubkeys: nonMemberAgentPubkeys,
+            role: 'bot',
+          );
+        }
+        if (inviteHumanPubkeys.isNotEmpty) {
+          await channelActions.addMembers(
+            channelId: channelId,
+            pubkeys: inviteHumanPubkeys,
+          );
+        }
+      }
 
       isSending.value = true;
       try {
-        if (nonMemberAgentPubkeys.isNotEmpty) {
-          await ref
-              .read(channelActionsProvider)
-              .addMembers(
-                channelId: channelId,
-                pubkeys: nonMemberAgentPubkeys,
-                role: 'bot',
-              );
-        }
-        if (inviteHumanPubkeys.isNotEmpty) {
-          await ref
-              .read(channelActionsProvider)
-              .addMembers(channelId: channelId, pubkeys: inviteHumanPubkeys);
-        }
         if (queuedAttachments.isEmpty) {
+          await addMentionedNonMembers();
           final payload = _ComposeDraftPayload.fromDraft(
             text: text,
             attachments: const [],
@@ -554,6 +558,8 @@ class ComposeBar extends HookConsumerWidget {
               attachments: uploaded,
               customEmoji: customEmoji,
             );
+            if (queueGeneration != uploadGeneration.value) return;
+            await addMentionedNonMembers();
             if (queueGeneration != uploadGeneration.value) return;
             await delivery(
               payload.content,

@@ -170,6 +170,7 @@ class BlobDescriptor {
     filename: value,
   );
 
+  /// Returns a descriptor with [value] as its NIP-71 video poster URL.
   BlobDescriptor withImage(String value) => BlobDescriptor(
     url: url,
     sha256: sha256,

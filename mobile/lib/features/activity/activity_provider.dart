@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/relay/relay.dart';
@@ -16,15 +19,121 @@ import 'inbox_item.dart';
 /// - recent DM messages from others (desktop surfaces DMs through p-tags;
 ///   mobile queries DM channels directly so untagged DM sends still appear)
 class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
+  static const _addressedKinds = [
+    1,
+    9,
+    40002,
+    43001,
+    43002,
+    43003,
+    43004,
+    43005,
+    43006,
+    45001,
+    45003,
+    46010,
+    46011,
+    46012,
+  ];
+
+  void Function()? _unsubscribeAddressed;
+  void Function()? _unsubscribeDms;
+  Timer? _liveRefreshTimer;
+  int _subscriptionGeneration = 0;
+
   @override
-  Future<HomeFeedResponse> build() {
+  Future<HomeFeedResponse> build() async {
     ref.watch(relayConfigProvider);
-    ref.watch(relaySessionProvider);
+    final sessionState = ref.watch(relaySessionProvider);
     // React to the DM channel set (loading → data, membership changes) so a
     // cold start where channels resolve after the first fetch still surfaces
     // DMs without a manual refresh.
     ref.watch(channelsProvider.select(_dmChannelKey));
-    return _fetch();
+
+    final generation = ++_subscriptionGeneration;
+    _clearLiveSubscriptions();
+    ref.onDispose(() {
+      _subscriptionGeneration += 1;
+      _clearLiveSubscriptions();
+    });
+
+    final response = await _fetch();
+    if (sessionState.status == SessionStatus.connected &&
+        generation == _subscriptionGeneration) {
+      unawaited(_subscribeLive(generation));
+    }
+    return response;
+  }
+
+  Future<void> _subscribeLive(int generation) async {
+    final myPk = ref.read(myPubkeyProvider);
+    if (myPk == null || generation != _subscriptionGeneration) return;
+
+    final session = ref.read(relaySessionProvider.notifier);
+    final since = DateTime.now().millisecondsSinceEpoch ~/ 1000 - 5;
+    try {
+      final unsubscribeAddressed = await session.subscribe(
+        NostrFilter(
+          kinds: _addressedKinds,
+          tags: {
+            '#p': [myPk],
+          },
+          since: since,
+          limit: 100,
+        ),
+        (_) => _scheduleLiveRefresh(generation),
+      );
+      if (generation != _subscriptionGeneration) {
+        unsubscribeAddressed();
+        return;
+      }
+      _unsubscribeAddressed = unsubscribeAddressed;
+
+      final dmChannelIds = [
+        for (final channel
+            in ref.read(channelsProvider).asData?.value ?? const <Channel>[])
+          if (channel.isDm && channel.isMember) channel.id,
+      ];
+      if (dmChannelIds.isEmpty) return;
+
+      final unsubscribeDms = await session.subscribe(
+        NostrFilter(
+          kinds: const [9],
+          tags: {'#h': dmChannelIds},
+          since: since,
+          limit: 100,
+        ),
+        (_) => _scheduleLiveRefresh(generation),
+      );
+      if (generation != _subscriptionGeneration) {
+        unsubscribeDms();
+        return;
+      }
+      _unsubscribeDms = unsubscribeDms;
+    } catch (error) {
+      if (generation == _subscriptionGeneration) {
+        debugPrint('[ActivityNotifier] live subscription failed: $error');
+      }
+    }
+  }
+
+  void _scheduleLiveRefresh(int generation) {
+    if (generation != _subscriptionGeneration) return;
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = Timer(const Duration(milliseconds: 50), () async {
+      if (generation != _subscriptionGeneration) return;
+      final next = await AsyncValue.guard(_fetch);
+      if (generation == _subscriptionGeneration) state = next;
+    });
+  }
+
+  void _clearLiveSubscriptions() {
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = null;
+    _unsubscribeAddressed?.call();
+    _unsubscribeAddressed = null;
+    _unsubscribeDms?.call();
+    _unsubscribeDms = null;
   }
 
   /// Stable identity for the joined DM channel set: null while channels are

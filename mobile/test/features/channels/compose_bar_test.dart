@@ -1935,6 +1935,86 @@ void main() {
       },
     );
 
+    testWidgets(
+      'does not add a mentioned non-member when media upload is cancelled',
+      (tester) async {
+        final agentPubkey = 'c' * 64;
+        final signer = nostr.Keys.generate();
+        final publishedEvents = <Map<String, dynamic>>[];
+        final uploadResponse = Completer<http.Response>();
+        final uploadService = MediaUploadService(
+          baseUrl: 'https://relay.example',
+          nsec: signer.nsec,
+          httpClient: http_testing.MockClient(
+            (request) => uploadResponse.future,
+          ),
+          pickGalleryVideo: () async => null,
+          pickGalleryImage: () async => null,
+          pickGalleryImages: () async => [
+            XFile.fromData(_pngBytes, name: 'tiny.png'),
+          ],
+        );
+
+        await tester.pumpWidget(
+          _buildComposeBar(
+            uploadService: uploadService,
+            currentPubkey: signer.public,
+            relayAgents: [_testAgent(agentPubkey)],
+            channels: [_makeCurrentChannel(), _makeSharedMemberChannel()],
+            onSend: (_, _, {mediaTags = const <List<String>>[]}) async {},
+          ),
+        );
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(ComposeBar)),
+        );
+        final session = container.read(relaySessionProvider.notifier);
+        final socket = _RecordingRelaySocket(
+          publishedEvents,
+          session.debugHandleSocketMessageForTest,
+        );
+        session.debugAttachSocketForTest(socket);
+
+        await _openSystemPhotoPicker(tester);
+        await tester.pumpAndSettle();
+        await _expandComposer(tester);
+        await tester.enterText(find.byType(TextField), '@hel');
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Helper Bot'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'hello @Helper Bot');
+        await tester.tap(find.byIcon(LucideIcons.arrowUp));
+        await tester.pump();
+
+        expect(
+          publishedEvents.where((event) => event['kind'] == 9000),
+          isEmpty,
+        );
+
+        await tester.pump(const Duration(milliseconds: 220));
+        await tester.tap(find.byKey(const ValueKey('compose-upload-cancel')));
+        uploadResponse.complete(
+          http.Response(
+            jsonEncode({
+              'url': 'https://relay.example/media/test.png',
+              'sha256':
+                  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              'size': 16,
+              'type': 'image/png',
+              'uploaded': 1,
+            }),
+            200,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          publishedEvents.where((event) => event['kind'] == 9000),
+          isEmpty,
+        );
+      },
+    );
+
     testWidgets('renders markdown formatting without visible delimiters', (
       tester,
     ) async {

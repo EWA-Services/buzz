@@ -7,10 +7,12 @@ import 'package:buzz/shared/relay/relay.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
-/// Records every DM history query (`#h` filter) so tests can assert whether
-/// the DM source was fetched. All queries resolve to empty lists.
+/// Records subscriptions and DM history queries for Activity projection tests.
 class _RecordingSessionNotifier extends RelaySessionNotifier {
   final List<List<String>> dmQueries = [];
+  final List<NostrEvent> _history = [];
+  final List<({NostrFilter filter, void Function(NostrEvent) onEvent})>
+  _subscriptions = [];
 
   @override
   SessionState build() => const SessionState(status: SessionStatus.connected);
@@ -22,7 +24,42 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
   }) async {
     final h = filter.tags['#h'];
     if (h != null) dmQueries.add(h);
-    return const [];
+    return _history.where((event) => _matches(filter, event)).toList();
+  }
+
+  @override
+  Future<void Function()> subscribe(
+    NostrFilter filter,
+    void Function(NostrEvent) onEvent, {
+    void Function(String message)? onClosed,
+  }) async {
+    final subscription = (filter: filter, onEvent: onEvent);
+    _subscriptions.add(subscription);
+    return () => _subscriptions.remove(subscription);
+  }
+
+  void emit(NostrEvent event) {
+    _history.add(event);
+    for (final subscription in List.of(_subscriptions)) {
+      if (_matches(subscription.filter, event)) {
+        subscription.onEvent(event);
+      }
+    }
+  }
+
+  bool _matches(NostrFilter filter, NostrEvent event) {
+    if (!filter.kinds.contains(event.kind)) return false;
+    for (final entry in filter.tags.entries) {
+      final tagName = entry.key.startsWith('#')
+          ? entry.key.substring(1)
+          : entry.key;
+      final matchesTag = event.tags.any(
+        (tag) =>
+            tag.length > 1 && tag[0] == tagName && entry.value.contains(tag[1]),
+      );
+      if (!matchesTag) return false;
+    }
+    return true;
   }
 }
 
@@ -105,4 +142,54 @@ void main() {
 
     expect(session.dmQueries, isEmpty);
   });
+
+  test(
+    'refreshes the inbox projection when addressed activity arrives',
+    () async {
+      final session = _RecordingSessionNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+          myPubkeyProvider.overrideWithValue('me_pk'),
+          relaySessionProvider.overrideWith(() => session),
+          channelsProvider.overrideWith(
+            () => _FixedChannelsNotifier(const <Channel>[]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await container.read(activityProvider.future);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(container.read(inboxItemsProvider), isEmpty);
+
+      session.emit(
+        const NostrEvent(
+          id: 'live-mention',
+          pubkey: 'other_pk',
+          createdAt: 1_700_000_000,
+          kind: 40002,
+          tags: [
+            ['p', 'me_pk'],
+            ['h', 'channel-1'],
+          ],
+          content: 'Hello from the live relay',
+          sig: '',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(container.read(inboxItemsProvider).single.id, 'live-mention');
+    },
+  );
+}
+
+class _FixedChannelsNotifier extends ChannelsNotifier {
+  final List<Channel> channels;
+
+  _FixedChannelsNotifier(this.channels);
+
+  @override
+  Future<List<Channel>> build() async => channels;
 }
