@@ -778,6 +778,7 @@ pub fn run() {
             pick_and_upload_image,
             upload_media_bytes,
             upload_media_bytes_raw,
+            cancel_media_upload,
             download_image,
             save_png_data_url,
             download_file,
@@ -946,7 +947,6 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
-
     let shutdown_done = Arc::new(AtomicBool::new(false));
 
     #[cfg(unix)]

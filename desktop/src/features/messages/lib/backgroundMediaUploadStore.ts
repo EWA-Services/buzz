@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import type { BlobDescriptor } from "@/shared/api/tauri";
-import { uploadMediaFile } from "@/shared/api/tauriMedia";
+import { cancelMediaUpload, uploadMediaFile } from "@/shared/api/tauriMedia";
 import {
   type BackgroundMediaUploadPhase,
   isNativeMediaUploadPhase,
@@ -12,13 +12,15 @@ export type QueuedMediaAttachment = {
   file: File;
   id: number;
   previewUrl?: string;
+  spoilered: boolean;
 };
 
 type BackgroundUploadTask = {
   canceled: boolean;
   filePhases: BackgroundMediaUploadPhase[];
-  fileProgress: number[];
+  fileProgress: Array<{ sent: number; total: number }>;
   id: number;
+  onCancel?: () => void;
 };
 
 type BackgroundUploadSnapshot = {
@@ -29,6 +31,7 @@ type BackgroundUploadSnapshot = {
 
 type EnqueueBackgroundUploadOptions = {
   attachments: QueuedMediaAttachment[];
+  onCancel?: () => void;
   onComplete: (descriptors: BlobDescriptor[]) => Promise<void>;
   onError: (error: unknown) => void;
 };
@@ -61,18 +64,21 @@ function progressId(taskId: number, fileIndex: number): string {
 function rebuildSnapshot(): void {
   const allTasks = [...tasks.values()];
   const allProgress = allTasks.flatMap((task) => task.fileProgress);
+  const totalBytes = allProgress.reduce(
+    (total, progress) => total + progress.total,
+    0,
+  );
+  const sentBytes = allProgress.reduce(
+    (total, progress) => total + progress.sent,
+    0,
+  );
   snapshot = {
-    isUploading: allProgress.length > 0,
+    isUploading: allTasks.length > 0,
     phase: resolveBackgroundMediaUploadPhase(
       allTasks.flatMap((task) => task.filePhases),
     ),
     percentage:
-      allProgress.length === 0
-        ? 0
-        : Math.round(
-            allProgress.reduce((total, progress) => total + progress, 0) /
-              allProgress.length,
-          ),
+      totalBytes === 0 ? 0 : Math.round((sentBytes / totalBytes) * 100),
   };
   for (const listener of listeners) listener();
 }
@@ -103,13 +109,13 @@ async function ensureUploadListeners(): Promise<void> {
           if (!task || fileIndex >= task.fileProgress.length) return;
 
           task.filePhases[fileIndex] = "uploading";
-          task.fileProgress[fileIndex] = Math.min(
-            100,
-            Math.max(
-              0,
-              Math.round((event.payload.sent / event.payload.total) * 100),
+          task.fileProgress[fileIndex] = {
+            sent: Math.min(
+              event.payload.total,
+              Math.max(0, event.payload.sent),
             ),
-          );
+            total: event.payload.total,
+          };
           rebuildSnapshot();
         }),
       );
@@ -157,6 +163,16 @@ function finishTask(taskId: number): void {
   }
 }
 
+function cancelTask(task: BackgroundUploadTask): void {
+  if (task.canceled) return;
+  task.canceled = true;
+  task.onCancel?.();
+  for (let index = 0; index < task.fileProgress.length; index += 1) {
+    void cancelMediaUpload(progressId(task.id, index)).catch(() => undefined);
+  }
+  finishTask(task.id);
+}
+
 function yieldForUploadFeedback(): Promise<void> {
   if (
     typeof window === "undefined" ||
@@ -192,7 +208,10 @@ export function prepareBackgroundMediaUpload(
   const task: BackgroundUploadTask = {
     canceled: false,
     filePhases: attachments.map(() => "preparing"),
-    fileProgress: attachments.map(() => 0),
+    fileProgress: attachments.map((attachment) => ({
+      sent: 0,
+      total: attachment.file.size,
+    })),
     id: taskId,
   };
   let started = false;
@@ -201,13 +220,12 @@ export function prepareBackgroundMediaUpload(
 
   return {
     cancel: () => {
-      if (task.canceled) return;
-      task.canceled = true;
-      finishTask(taskId);
+      cancelTask(task);
     },
-    start: ({ onComplete, onError }) => {
+    start: ({ onCancel, onComplete, onError }) => {
       if (started || task.canceled) return false;
       started = true;
+      task.onCancel = onCancel;
 
       void (async () => {
         try {
@@ -225,7 +243,10 @@ export function prepareBackgroundMediaUpload(
             );
             if (task.canceled) return;
             task.filePhases[index] = "finishing";
-            task.fileProgress[index] = 100;
+            task.fileProgress[index] = {
+              sent: task.fileProgress[index].total,
+              total: task.fileProgress[index].total,
+            };
             rebuildSnapshot();
             descriptors.push(descriptor);
           }
@@ -257,11 +278,7 @@ export function enqueueBackgroundMediaUpload({
 }
 
 export function cancelBackgroundMediaUploads(): void {
-  for (const task of tasks.values()) task.canceled = true;
-  tasks.clear();
-  rebuildSnapshot();
-  for (const dispose of stopUploadListeners) dispose();
-  stopUploadListeners = [];
+  for (const task of [...tasks.values()]) cancelTask(task);
 }
 
 export const resetBackgroundMediaUploads = cancelBackgroundMediaUploads;

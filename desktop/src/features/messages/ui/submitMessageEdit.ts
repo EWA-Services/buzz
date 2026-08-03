@@ -20,6 +20,7 @@ type SubmitMessageEditOptions = EditDraft & {
   clearComposer: () => void;
   customEmoji: ReadonlyArray<CustomEmoji>;
   extractMentionPubkeys: (content: string) => string[];
+  editTargetId: string;
   originalContent: string;
   ownerPubkey: string | null;
   restoreComposer: (draft: EditDraft) => void;
@@ -27,6 +28,7 @@ type SubmitMessageEditOptions = EditDraft & {
     content: string,
     mediaTags?: string[][],
     mentionPubkeys?: string[],
+    eventId?: string,
   ) => Promise<void>;
   setUploadError: (message: string) => void;
 };
@@ -36,6 +38,7 @@ export async function submitMessageEdit({
   clearComposer,
   content,
   customEmoji,
+  editTargetId,
   extractMentionPubkeys,
   originalContent,
   ownerPubkey,
@@ -64,14 +67,19 @@ export async function submitMessageEdit({
     const { content: finalContent, mediaTags } = buildOutgoingMessage(
       content,
       [...draft.pendingImeta, ...uploaded],
-      draft.spoileredAttachmentUrls,
+      new Set([
+        ...draft.spoileredAttachmentUrls,
+        ...draft.queuedAttachments.flatMap((attachment, index) =>
+          attachment.spoilered && uploaded[index] ? [uploaded[index].url] : [],
+        ),
+      ]),
     );
     const outgoingTags =
       mergeOutgoingTags(
         mediaTags,
         buildCustomEmojiTags(finalContent, customEmoji),
       ) ?? [];
-    await save(finalContent, outgoingTags, addedMentionPubkeys);
+    await save(finalContent, outgoingTags, addedMentionPubkeys, editTargetId);
   };
 
   if (draft.queuedAttachments.length > 0) {

@@ -31,6 +31,7 @@ export type UploadingAttachmentPreview = {
    * (e.g. video transcoding before the HTTP upload starts). */
   progress?: number | null;
   slotIndex?: number;
+  spoilered?: boolean;
   type?: string;
 };
 
@@ -299,7 +300,7 @@ export function useMediaUpload({
             if (poster) updateQueuedVideoPoster(id, poster.posterUrl);
           });
         }
-        return { file, id, previewUrl };
+        return { file, id, previewUrl, spoilered: false };
       });
 
       setQueuedAttachmentsState((current) => [...current, ...attachments]);
@@ -332,9 +333,25 @@ export function useMediaUpload({
     (attachments: QueuedMediaAttachment[]) => {
       clearQueuedAttachments();
       queueFiles(attachments.map((attachment) => attachment.file));
+      setQueuedAttachmentsState((current) =>
+        current.map((attachment, index) => ({
+          ...attachment,
+          spoilered: attachments[index]?.spoilered ?? false,
+        })),
+      );
     },
     [clearQueuedAttachments, queueFiles],
   );
+
+  const toggleQueuedAttachmentSpoiler = React.useCallback((id: number) => {
+    setQueuedAttachmentsState((current) =>
+      current.map((attachment) =>
+        attachment.id === id
+          ? { ...attachment, spoilered: !attachment.spoilered }
+          : attachment,
+      ),
+    );
+  }, []);
 
   React.useEffect(
     () => () => {
@@ -791,6 +808,7 @@ export function useMediaUpload({
         filename: attachment.file.name,
         id: attachment.id,
         posterUrl: attachment.previewUrl,
+        spoilered: attachment.spoilered,
         type: attachment.file.type,
       })),
     [queuedAttachments],
@@ -820,6 +838,7 @@ export function useMediaUpload({
       revertAttachment,
       setPendingImeta,
       setUploadState,
+      toggleQueuedAttachmentSpoiler,
       uploadEditedAttachment,
       uploadFile,
       uploadingCount,
@@ -846,6 +865,7 @@ export function useMediaUpload({
       restoreQueuedAttachments,
       revertAttachment,
       setPendingImeta,
+      toggleQueuedAttachmentSpoiler,
       uploadEditedAttachment,
       uploadFile,
       uploadingCount,

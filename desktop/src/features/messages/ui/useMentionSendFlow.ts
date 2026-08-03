@@ -526,7 +526,9 @@ export function useMentionSendFlow({
         const restoreComposerAfterFailure = () => {
           if (
             !isMountedRef.current ||
-            draft.capturedChannelId !== channelIdRef.current
+            (draft.capturedChannelId !== channelIdRef.current &&
+              channelIdRef.current !== null) ||
+            contentRef.current.trim().length > 0
           ) {
             return;
           }
@@ -543,7 +545,14 @@ export function useMentionSendFlow({
           const { content: finalContent, mediaTags } = buildOutgoingMessage(
             draft.trimmed,
             [...draft.savedImeta, ...uploaded],
-            draft.savedSpoileredAttachmentUrls,
+            new Set([
+              ...draft.savedSpoileredAttachmentUrls,
+              ...draft.queuedAttachments.flatMap((attachment, index) =>
+                attachment.spoilered && uploaded[index]
+                  ? [uploaded[index].url]
+                  : [],
+              ),
+            ]),
           );
           const finalOutgoingTags = mergeOutgoingTags(
             mediaTags,
@@ -593,6 +602,7 @@ export function useMentionSendFlow({
                 `Upload failed: ${getErrorMessage(error, "Unknown error")}`,
               );
             },
+            onCancel: restoreComposerAfterFailure,
           });
           if (!uploadStarted) return;
         }
@@ -600,7 +610,10 @@ export function useMentionSendFlow({
         // Replace the sent body directly with its final post-send state before
         // the async network send starts. This avoids an intermediate blank frame
         // for persistent audiences while preserving the ordinary empty state.
-        if (draft.capturedChannelId === channelIdRef.current) {
+        if (
+          draft.capturedChannelId === channelIdRef.current ||
+          channelIdRef.current === null
+        ) {
           clearComposer(
             resolvePostSendContent?.(effectiveExplicitAgentPubkeys),
           );

@@ -150,8 +150,9 @@ export function useChannelPaneHandlers({
       content: string,
       mediaTags?: string[][],
       mentionPubkeys?: string[],
+      capturedEventId?: string,
     ) => {
-      const eventId = editTargetIdRef.current;
+      const eventId = capturedEventId ?? editTargetIdRef.current;
       if (!eventId) {
         return;
       }
@@ -178,7 +179,7 @@ export function useChannelPaneHandlers({
         mediaTags,
         mentionPubkeys,
       });
-      setEditTargetId(null);
+      setEditTargetId((current) => (current === eventId ? null : current));
     },
     [onRequestEmptyEditDelete, setEditTargetId],
   );

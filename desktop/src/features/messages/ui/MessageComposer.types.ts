@@ -66,6 +66,8 @@ export type MessageComposerProps = {
     content: string,
     mediaTags?: string[][],
     mentionPubkeys?: string[],
+    /** Target captured when the edit was submitted; avoids a later ref swap. */
+    eventId?: string,
   ) => Promise<void>;
   /** Captures send context synchronously before awaits can change navigation. */
   onCaptureSendContext?: () => {

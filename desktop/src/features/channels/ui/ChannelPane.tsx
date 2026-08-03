@@ -777,6 +777,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   }
                   onSend={handleSendMessage}
                   profiles={profiles}
+                  showBackgroundUploadProgress={false}
                   placeholder={
                     timeoutState.active
                       ? "You're timed out by community moderators."

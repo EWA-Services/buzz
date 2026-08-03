@@ -31,6 +31,11 @@ export async function uploadMediaFile(
   );
 }
 
+/** Stop the native HTTP request associated with a background media upload. */
+export async function cancelMediaUpload(progressId: string): Promise<void> {
+  await invokeTauri("cancel_media_upload", { progressId });
+}
+
 /**
  * Open a native single-file picker constrained to images and upload the
  * chosen file. Non-image files are rejected in Rust (via MIME sniffing)

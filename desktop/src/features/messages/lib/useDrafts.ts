@@ -495,12 +495,24 @@ export function getSentDraftEntries(): Array<{
  */
 export function markDraftSentEntry(
   draftKey: string,
-  _content: string,
-  _channelId: string,
-  _pendingImeta: ImetaMedia[],
-  _spoileredAttachmentUrls: string[],
+  content: string,
+  channelId: string,
+  pendingImeta: ImetaMedia[],
+  spoileredAttachmentUrls: string[],
 ): void {
-  clearDraftEntry(draftKey);
+  const draft = loadDraftEntry(draftKey);
+  // A background upload can finish after the user has started the next draft
+  // in this same channel. Clear only the exact submitted snapshot rather than
+  // deleting whichever newer entry currently owns the key.
+  if (
+    draft?.content === content &&
+    draft.channelId === channelId &&
+    JSON.stringify(draft.pendingImeta) === JSON.stringify(pendingImeta) &&
+    JSON.stringify(draft.spoileredAttachmentUrls) ===
+      JSON.stringify(spoileredAttachmentUrls)
+  ) {
+    clearDraftEntry(draftKey);
+  }
 }
 
 // ── Reactive hooks ────────────────────────────────────────────────────────────

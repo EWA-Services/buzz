@@ -3,6 +3,7 @@ use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::State;
+use tokio_util::sync::CancellationToken;
 
 use crate::app_state::AppState;
 use crate::relay::{parse_json_response, relay_api_base_url_with_override, relay_error_message};
@@ -417,7 +418,7 @@ pub(crate) async fn upload_image_bytes(
         return Err("profile avatar must be an image".to_string());
     }
     let body = sanitize_image_for_upload(body, &mime)?;
-    do_upload(body, &mime, state, None).await
+    do_upload(body, &mime, state, None, None).await
 }
 
 async fn do_upload(
@@ -425,6 +426,7 @@ async fn do_upload(
     mime: &str,
     state: &AppState,
     progress: Option<(tauri::AppHandle, String)>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<BlobDescriptor, String> {
     let sha256 = hex::encode(Sha256::digest(&body));
 
@@ -458,6 +460,7 @@ async fn do_upload(
         &sha256,
         body.clone(),
         progress.as_ref(),
+        cancellation,
     )
     .await?;
     if should_retry_legacy_upload(resp.status()) {
@@ -469,6 +472,7 @@ async fn do_upload(
             &sha256,
             body,
             progress.as_ref(),
+            cancellation,
         )
         .await?;
     }
@@ -515,7 +519,7 @@ pub async fn upload_media(
 
     let mime = detect_and_validate_mime(&body)?;
     let body = sanitize_image_for_upload(body, &mime)?;
-    do_upload(body, &mime, &state, None).await
+    do_upload(body, &mime, &state, None, None).await
 }
 
 /// Read a picked path through the TOCTOU-safe pipeline (fd pin → sniff →
@@ -596,9 +600,9 @@ async fn process_picked_path(
 
     // Upload video first, then poster (best-effort). If poster upload fails,
     // the video descriptor is returned without an image field.
-    let mut descriptor = do_upload(body, &mime, state, progress).await?;
+    let mut descriptor = do_upload(body, &mime, state, progress, None).await?;
     if let Some(poster) = poster_bytes {
-        match do_upload(poster, "image/jpeg", state, None).await {
+        match do_upload(poster, "image/jpeg", state, None, None).await {
             Ok(poster_desc) => descriptor.image = Some(poster_desc.url),
             Err(e) => eprintln!("buzz-desktop: poster upload failed (non-fatal): {e}"),
         }
@@ -703,12 +707,21 @@ pub(super) async fn upload_media_bytes_inner(
     progress_id: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<BlobDescriptor, String> {
     if data.is_empty() {
         return Err("empty upload".to_string());
     }
 
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err("upload cancelled".to_string());
+    }
+
     emit_media_upload_phase(&app, progress_id.as_deref(), "preparing");
+
+    let heic_by_extension = filename
+        .as_deref()
+        .is_some_and(|name| has_heic_extension(std::path::Path::new(name)));
 
     let (body, poster_bytes) = if is_video_file(&data) {
         emit_media_upload_phase(&app, progress_id.as_deref(), "processing-video");
@@ -728,7 +741,7 @@ pub(super) async fn upload_media_bytes_inner(
         })
         .await
         .map_err(|e| format!("transcode task failed: {e}"))??
-    } else if is_heic_file(&data) {
+    } else if is_heic_file(&data) || heic_by_extension {
         emit_media_upload_phase(&app, progress_id.as_deref(), "converting-image");
         // HEIC/HEIF still pasted/dropped: no filename here, so detection is
         // magic-bytes only. ffmpeg needs a path, so write to temp, transcode
@@ -756,11 +769,14 @@ pub(super) async fn upload_media_bytes_inner(
 
     // Upload video first, then poster (best-effort).
     let progress = progress_id.as_ref().map(|id| (app.clone(), id.clone()));
-    let mut descriptor = do_upload(body, &mime, &state, progress).await?;
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err("upload cancelled".to_string());
+    }
+    let mut descriptor = do_upload(body, &mime, &state, progress, cancellation).await?;
 
     emit_media_upload_phase(&app, progress_id.as_deref(), "finishing");
     if let Some(poster) = poster_bytes {
-        match do_upload(poster, "image/jpeg", &state, None).await {
+        match do_upload(poster, "image/jpeg", &state, None, cancellation).await {
             Ok(poster_desc) => descriptor.image = Some(poster_desc.url),
             Err(e) => eprintln!("buzz-desktop: poster upload failed (non-fatal): {e}"),
         }

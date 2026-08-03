@@ -28,6 +28,8 @@ type UseDraftPersistLifecycleParams = {
   livePendingImeta: ImetaMedia[];
   /** Async setter for pendingImeta — called after the synchronous snapshot. */
   setPendingImeta: (imeta: ImetaMedia[]) => void;
+  /** Local files cannot be persisted, so clear them at a draft-key boundary. */
+  clearQueuedAttachments?: () => void;
   /** Set the rich-text editor content from a draft string. */
   setContent: (content: string) => void;
   /** Clear the rich-text editor content (no-draft path). */
@@ -80,6 +82,7 @@ export function useDraftPersistLifecycle({
   restoreMentionRefs,
   livePendingImeta,
   setPendingImeta,
+  clearQueuedAttachments,
   setContent,
   clearContent,
   setSpoileredAttachmentUrls,
@@ -99,6 +102,9 @@ export function useDraftPersistLifecycle({
     // already reflects the incoming channel, which would corrupt the outgoing
     // draft's channelId metadata.
 
+    // Files cannot be serialized into the draft store. Dropping the in-memory
+    // queue here prevents it from being sent in the next channel or thread.
+    clearQueuedAttachments?.();
     const saved = effectiveDraftKey ? loadDraft(effectiveDraftKey) : undefined;
     if (saved) {
       setContent(saved.content);

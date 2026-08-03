@@ -63,6 +63,8 @@ type ComposerAttachmentsProps = {
   onCancelUpload?: (previewId: number) => void;
   /** Remove a local attachment that has not started uploading yet. */
   onRemoveQueued?: (previewId: number) => void;
+  /** Toggle spoiler state for a local attachment before it receives a URL. */
+  onToggleQueuedSpoiler?: (previewId: number) => void;
   /** Local previews that are queued for upload when the message is sent. */
   queuedPreviews?: UploadingAttachmentPreview[];
   uploadingCount?: number;
@@ -516,6 +518,7 @@ export const ComposerAttachments = React.memo(function ComposerAttachments({
   uploadingPreviews = [],
   onCancelUpload,
   onRemoveQueued,
+  onToggleQueuedSpoiler,
   queuedPreviews = [],
   onEditSave,
   onRemove,
@@ -648,6 +651,11 @@ export const ComposerAttachments = React.memo(function ComposerAttachments({
                         </div>
                       )}
                     </div>
+                    {preview.spoilered ? (
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl bg-background/55 text-foreground/70 backdrop-blur-[1px]">
+                        <HatGlasses className="h-4 w-4" />
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="flex h-5 max-w-40 items-center gap-1 rounded border border-border/70 bg-muted px-1.5">
@@ -670,6 +678,30 @@ export const ComposerAttachments = React.memo(function ComposerAttachments({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>Remove attachment</TooltipContent>
+                  </Tooltip>
+                ) : null}
+                {isMedia && onToggleQueuedSpoiler ? (
+                  <Tooltip disableHoverableContent>
+                    <TooltipTrigger asChild>
+                      <Toggle
+                        aria-label={
+                          preview.spoilered
+                            ? "Remove spoiler"
+                            : "Mark as spoiler"
+                        }
+                        className="absolute -bottom-1 -left-1 z-10 h-4 w-4 rounded-full bg-foreground text-background hover:bg-foreground"
+                        onPressedChange={() =>
+                          onToggleQueuedSpoiler(preview.id)
+                        }
+                        pressed={preview.spoilered}
+                        type="button"
+                      >
+                        <HatGlasses className="h-2.5 w-2.5" />
+                      </Toggle>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {preview.spoilered ? "Remove spoiler" : "Mark as spoiler"}
+                    </TooltipContent>
                   </Tooltip>
                 ) : null}
               </motion.div>

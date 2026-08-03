@@ -85,7 +85,7 @@ function MessageComposerImpl({
   profiles,
   replyTarget = null,
   mediaController,
-  showBackgroundUploadProgress = false,
+  showBackgroundUploadProgress = true,
   showTopBorder = false,
   toolbarExtraActions,
   typingParentEventId = null,
@@ -127,10 +127,10 @@ function MessageComposerImpl({
       : null;
   const effectiveDraftKeyRef = React.useRef(effectiveDraftKey);
   effectiveDraftKeyRef.current = effectiveDraftKey;
-  // Snapshot composer state before edit mode so cancel can restore it.
   const preEditSnapshotRef = React.useRef<{
     content: string;
     pendingImeta: ImetaMedia[];
+    queuedAttachments: ReturnType<typeof useMediaUpload>["queuedAttachments"];
     spoileredAttachmentUrls: Set<string>;
   } | null>(null);
   const mentions = useMentions(channelId, undefined, profiles, {
@@ -144,17 +144,12 @@ function MessageComposerImpl({
     typingParentEventId,
     typingRootEventId,
   );
-
-  // New files stay local so the composer can render previews immediately;
-  // submitting hands them to the app-wide background upload queue.
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
   const ownsDropZone = mediaController === undefined;
   const backgroundUpload = useBackgroundMediaUpload();
 
-  // Draft-persist lifecycle: restore/clear content + imeta + spoilered urls on
-  // key change, and persist the outgoing draft in the cleanup. The StrictMode
-  // fix lives inside this hook — see useDraftPersistSnapshot.ts.
+  // Restore/persist drafts at a key boundary; the hook handles StrictMode.
   useDraftPersistLifecycle({
     effectiveDraftKey,
     channelId,
@@ -164,6 +159,7 @@ function MessageComposerImpl({
     restoreMentionRefs: mentions.restoreDraftMentionRefs,
     livePendingImeta: media.pendingImeta,
     setPendingImeta: media.setPendingImeta,
+    clearQueuedAttachments: media.clearQueuedAttachments,
     setContent: (content) => {
       setComposerContent(content);
       richText.setContent(content);
@@ -332,12 +328,11 @@ function MessageComposerImpl({
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
   React.useEffect(() => {
     if (editTarget) {
-      // Snapshot the current draft (text + attachments) so the user's
-      // in-flight work survives the edit-mode hijack and is restored on
-      // edit-cancel/exit.
+      // Preserve the user's in-flight draft while editing another message.
       preEditSnapshotRef.current = {
         content: syncComposerContentFromEditor(),
         pendingImeta: [...media.pendingImetaRef.current],
+        queuedAttachments: [...media.queuedAttachmentsRef.current],
         spoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
       };
       // Strip the trailing `![image|video](url)` lines that correspond to
@@ -354,6 +349,7 @@ function MessageComposerImpl({
       // attachments so they show up in `ComposerAttachments` and the user
       // can remove existing ones / add new ones before saving.
       media.setPendingImeta(editableImeta);
+      media.clearQueuedAttachments();
       setSpoileredAttachmentUrls(
         findSpoileredImetaMediaUrls(editTarget.body, editableImeta),
       );
@@ -369,6 +365,7 @@ function MessageComposerImpl({
       const {
         content: restoredContent,
         pendingImeta: restoredImeta,
+        queuedAttachments: restoredQueuedAttachments,
         spoileredAttachmentUrls: restoredSpoileredAttachmentUrls,
       } = preEditSnapshotRef.current;
       preEditSnapshotRef.current = null;
@@ -377,6 +374,7 @@ function MessageComposerImpl({
         ? richText.setContent(restoredContent)
         : richText.clearContent();
       media.setPendingImeta(restoredImeta);
+      media.restoreQueuedAttachments(restoredQueuedAttachments);
       setSpoileredAttachmentUrls(restoredSpoileredAttachmentUrls);
     }
   }, [editTarget?.id]);
@@ -523,6 +521,7 @@ function MessageComposerImpl({
       // deletes the message instead of publishing it (see handleEditSave).
       await submitMessageEdit({
         content: trimmed,
+        editTargetId: editTargetRef.current.id,
         customEmoji,
         originalContent: editTargetRef.current.body,
         ownerPubkey: ownerPubkeyRef.current,
@@ -961,6 +960,7 @@ function MessageComposerImpl({
                   isUploading={media.isUploading}
                   onCancelUpload={media.cancelUpload}
                   onRemoveQueued={media.removeQueuedAttachment}
+                  onToggleQueuedSpoiler={media.toggleQueuedAttachmentSpoiler}
                   queuedPreviews={media.queuedPreviews}
                   uploadingCount={media.uploadingCount}
                   uploadingPreviews={media.uploadingPreviews}
