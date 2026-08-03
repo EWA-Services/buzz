@@ -7601,4 +7601,191 @@ mod tests {
 
         server.abort();
     }
+
+    // ── A2: run_prompt_task DM forwarding end-to-end ────────────────────────
+
+    /// Proves the fail-closed `is_dm_turn` classification at `pool.rs:1616-1632`
+    /// and its forwarding at `pool.rs:1942` as ONE tested behavior by entering
+    /// through `run_prompt_task` with a seeded-DM channel and a scripted bash
+    /// agent. The DM history HTTP endpoint must be reached from within the
+    /// production call path, proving the forwarded value governs
+    /// `fetch_conversation_context`.
+    ///
+    /// ## Mutation check
+    ///
+    /// Temporarily changing `pool.rs:1942` to pass a hardcoded `false` instead
+    /// of `is_dm_turn` causes `fetch_conversation_context` to skip the DM fetch
+    /// entirely (no thread root, not DM → `None`, zero HTTP requests). The
+    /// `requests >= 1` assertion then fails, catching the dropped-forwarding
+    /// regression Thufir identified as the exact defect this test must prove.
+    #[tokio::test]
+    async fn test_run_prompt_task_dm_classification_forwarding_is_end_to_end_authoritative() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // ── HTTP server: counts all requests, returns a valid DM event body ──
+        // Both the DM history fetch and the profile lookup hit `/query`; any
+        // request proves the DM path was reached. The DM parse only requires a
+        // non-empty array with `content` — `pubkey` defaults to "unknown".
+        let dm_body = serde_json::json!([{
+            "content": "hello from dm",
+            "created_at": 1_700_000_000u64,
+            "pubkey": "aabb"
+        }])
+        .to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        // `dm_requests` counts only requests whose body contains the DM-kind
+        // sentinel (40002 = KIND_STREAM_MESSAGE_V2). This distinguishes the
+        // DM context fetch from the profile-lookup request, which uses kind 0
+        // (Metadata) and is always issued regardless of `is_dm_turn`.
+        let dm_requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_dm_requests = dm_requests.clone();
+        let server_body = dm_body.clone();
+
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]);
+                // Count only the DM context query (contains kind 40002).
+                // Profile-lookup queries contain only kind 0 (Metadata) and
+                // never 40002, so this counter is specific to the DM path.
+                if raw.contains("40002") {
+                    server_dm_requests.fetch_add(1, Ordering::SeqCst);
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    server_body.len(),
+                    server_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        // ── Scripted bash agent: responds to session/new (id=0) then ─────────
+        // session/prompt (id=1). The DM HTTP fetch happens between the two
+        // ACP calls, so the script needs to hold open long enough for the
+        // context fetch to complete before it reads and responds to the prompt.
+        let script = r#"
+            read -t 10 _req1
+            printf '{"jsonrpc":"2.0","id":0,"result":{"sessionId":"ses-dm-test"}}\n'
+            read -t 10 _req2
+            printf '{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}\n'
+            sleep 1
+        "#;
+
+        let acp = crate::acp::AcpClient::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            &[],
+            false,
+        )
+        .await
+        .expect("spawn bash agent");
+
+        // ── OwnedAgent: protocol_version=2, agent_name not "goose" ────────────
+        let agent_keys = nostr::Keys::generate();
+        let agent = OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            agent_name: "test-bash".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 2,
+        };
+
+        // ── PromptContext: channel seeded as DM type so no network fetch ──────
+        // needed for channel metadata; rest_client points to the HTTP server
+        // so the DM history fetch (and profile lookup) are counted.
+        let channel_id = Uuid::from_u128(0x2001);
+        let mut channel_startup: std::collections::HashMap<Uuid, ChannelInfo> =
+            std::collections::HashMap::new();
+        channel_startup.insert(
+            channel_id,
+            ChannelInfo {
+                name: "test-dm".to_string(),
+                channel_type: "dm".to_string(),
+                description: None,
+            },
+        );
+        let rest_client = crate::relay::RestClient {
+            http: reqwest::Client::new(),
+            base_url: base_url.clone(),
+            keys: agent_keys.clone(),
+            auth_tag_json: None,
+        };
+        let channel_info_rest = crate::relay::RestClient {
+            http: reqwest::Client::new(),
+            base_url: base_url.clone(),
+            keys: agent_keys.clone(),
+            auth_tag_json: None,
+        };
+        let ctx = std::sync::Arc::new(PromptContext {
+            rest_client,
+            context_message_limit: 10,
+            agent_keys: agent_keys.clone(),
+            channel_info: ChannelInfoResolver::new(channel_startup, channel_info_rest),
+            ..make_prompt_context_no_owner()
+        });
+
+        // ── FlushBatch: no thread tags → DM non-reply path in ────────────────
+        // fetch_conversation_context. The event pubkey is a fresh key so the
+        // profile lookup will attempt one additional `/query` request, which
+        // also contributes to the request count but does not affect correctness.
+        let event = {
+            let event_keys = nostr::Keys::generate();
+            nostr::EventBuilder::new(nostr::Kind::Custom(1), "hello dm")
+                .custom_created_at(nostr::Timestamp::from(1_700_000_000u64))
+                .sign_with_keys(&event_keys)
+                .expect("sign")
+        };
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![crate::queue::BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        // ── run_prompt_task: fire and receive the PromptResult ────────────────
+        let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<PromptResult>();
+        run_prompt_task(
+            agent,
+            Some(batch),
+            None,
+            ctx,
+            result_tx,
+            None, // control_rx: None = non-cancellable path
+            "turn-dm-test".to_string(),
+        )
+        .await;
+
+        // Drain the result channel (run_prompt_task always sends one PromptResult).
+        let _result = result_rx.try_recv().expect("PromptResult must be sent");
+
+        // ── Assertion: DM fetch (kind-40002 query) must have reached the server ─
+        // This is the mutation tripwire: changing pool.rs:1942 to pass `false`
+        // skips the DM fetch entirely so dm_requests stays 0. Profile-lookup
+        // requests (kind 0) are issued regardless and are NOT counted here.
+        let total_dm_requests = dm_requests.load(Ordering::SeqCst);
+        assert!(
+            total_dm_requests >= 1,
+            "run_prompt_task with a DM channel must issue at least one DM history \
+             query (containing kind 40002) via fetch_conversation_context; \
+             got {total_dm_requests} — if this is 0, the is_dm_turn forwarding \
+             at pool.rs:1942 has regressed"
+        );
+
+        server.abort();
+    }
 }
