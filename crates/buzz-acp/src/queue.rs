@@ -1249,7 +1249,7 @@ fn resolve_reply_anchor(
 /// replies; in the channel branch a `Some` anchor means a human-facing
 /// top-level mention whose reply should open a new thread rooted at the
 /// triggering event.
-fn format_context_hints(
+pub(crate) fn format_context_hints(
     channel_id: Uuid,
     channel_info: Option<&PromptChannelInfo>,
     thread_tags: &ThreadTags,
@@ -1400,23 +1400,6 @@ pub(crate) fn append_canvas_pointer(
         "\nCanvas revision (event ID): {}\nLast modified: {}\nFetch current content with: buzz canvas get --channel {channel_uuid}",
         p.event_id, p.timestamp
     ));
-}
-
-/// Alias used by the `initial_message` dispatch in pool.rs.
-pub(crate) fn append_description_for_initial_message(
-    s: &mut String,
-    channel_info: Option<&PromptChannelInfo>,
-) {
-    append_channel_description(s, channel_info);
-}
-
-/// Alias used by the `initial_message` dispatch in pool.rs.
-pub(crate) fn append_canvas_pointer_for_initial_message(
-    s: &mut String,
-    pointer: Option<&CanvasPointer>,
-    channel_uuid: &str,
-) {
-    append_canvas_pointer(s, pointer, channel_uuid);
 }
 
 /// Format a conversation context section (thread or DM).

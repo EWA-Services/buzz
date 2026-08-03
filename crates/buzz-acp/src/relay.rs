@@ -420,6 +420,43 @@ impl RestClient {
             .map_err(|e| RelayError::Http(e.to_string()))
     }
 
+    /// Single-attempt query — identical to `query` but bypasses `request_with_retry`.
+    ///
+    /// Use on per-turn hot paths (e.g. canvas fetch) where the latency contract
+    /// forbids implicit retries: one HTTP attempt, one outcome, no retry delays.
+    pub async fn query_once(&self, filters: &[nostr::Filter]) -> Result<Value, RelayError> {
+        let body_bytes = serde_json::to_vec(filters)
+            .map_err(|e| RelayError::Http(format!("filter serialize error: {e}")))?;
+        let url = format!("{}/query", self.base_url);
+        let body_owned = body_bytes.to_vec();
+        let auth_tag_header = self.auth_tag_json.clone();
+        let auth = self
+            .nip98_header("POST", &url, Some(&body_owned))
+            .unwrap_or_default();
+        let mut req = self
+            .http
+            .post(&url)
+            .header("Authorization", auth)
+            .header("Content-Type", "application/json");
+        if let Some(ref tag) = auth_tag_header {
+            req = req.header("x-auth-tag", tag);
+        }
+        let resp = req
+            .body(body_owned)
+            .send()
+            .await
+            .map_err(|e| RelayError::Http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(RelayError::Http(format!(
+                "POST /query returned HTTP {}",
+                resp.status()
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| RelayError::Http(e.to_string()))
+    }
+
     /// Count events via the HTTP bridge: `POST /count` with NIP-98 auth.
     ///
     /// Accepts a slice of `nostr::Filter` (serialized as JSON array).
