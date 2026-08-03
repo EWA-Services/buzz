@@ -42,13 +42,13 @@ export function ComposerUploadProgressPill({
           <div
             aria-label={`Uploading ${percentage}%`}
             aria-live="polite"
-            className="relative h-9 w-[18.75rem] max-w-full overflow-hidden rounded-full border border-border bg-muted"
+            className="relative h-9 w-[18.75rem] max-w-full overflow-hidden rounded-full border border-primary bg-primary text-primary-foreground"
             data-testid="composer-upload-progress"
             role="status"
           >
             <motion.div
               animate={{ width: `${percentage}%` }}
-              className="absolute inset-y-0 left-0 bg-primary/[0.12] dark:bg-primary/[0.15]"
+              className="absolute inset-y-0 left-0 bg-primary-foreground/20"
               data-testid="composer-upload-progress-fill"
               initial={false}
               transition={
@@ -58,17 +58,17 @@ export function ComposerUploadProgressPill({
               }
             />
             <div className="relative flex h-full items-center gap-2 pl-3 pr-1">
-              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-primary-foreground">
                 Uploading
-                <span className="text-muted-foreground">
+                <span className="text-primary-foreground/80">
                   {" · "}
                   {percentage}%
                 </span>
               </span>
               <button
                 className={cn(
-                  "shrink-0 rounded-full bg-transparent px-2 py-1 text-sm font-semibold text-foreground",
-                  "transition-colors hover:bg-foreground/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+                  "shrink-0 rounded-full bg-transparent px-2 py-1 text-sm font-semibold text-primary-foreground",
+                  "transition-colors hover:bg-primary-foreground/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary-foreground",
                 )}
                 data-testid="composer-upload-cancel"
                 onClick={onCancel}
