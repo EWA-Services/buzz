@@ -128,6 +128,7 @@ class ChannelDetailPage extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final composerDockHeight = useState(0.0);
+    final sendMessage = ref.read(sendMessageProvider);
     final detailsAsync = ref.watch(channelDetailsProvider(channel.id));
     final channelsAsync = ref.watch(channelsProvider);
     final messagesState = ref.watch(channelMessagesProvider(channel.id));
@@ -443,9 +444,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                             content,
                             mentionPubkeys, {
                             mediaTags = const <List<String>>[],
-                          }) => ref
-                              .read(sendMessageProvider)
-                              .call(
+                          }) => sendMessage.call(
                                 channelId: channel.id,
                                 content: content,
                                 mentionPubkeys: mentionPubkeys,
