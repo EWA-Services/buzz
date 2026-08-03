@@ -90,12 +90,12 @@ export function ComposerUploadProgressPill({
                     </motion.span>
                   </AnimatePresence>
                   <motion.span
-                    className="text-primary-foreground/80"
+                    className="ml-1 text-primary-foreground/80"
                     data-testid="composer-upload-percentage"
                     layout="position"
                     transition={phaseTransition}
                   >
-                    {" · "}
+                    {"· "}
                     {percentage}%
                   </motion.span>
                 </span>

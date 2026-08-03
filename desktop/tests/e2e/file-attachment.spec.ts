@@ -175,9 +175,18 @@ test("shows upload feedback before transferring a large file", async ({
   }, uploadId);
   await expect(progress).toHaveAttribute("aria-label", "Processing 0%");
   await waitForAnimations(page);
+  const processingPhaseBox = await page
+    .getByTestId("composer-upload-phase")
+    .boundingBox();
   const processingPercentageBox = await page
     .getByTestId("composer-upload-percentage")
     .boundingBox();
+  expect(processingPhaseBox).not.toBeNull();
+  expect(processingPercentageBox).not.toBeNull();
+  expect(
+    (processingPercentageBox?.x ?? 0) -
+      ((processingPhaseBox?.x ?? 0) + (processingPhaseBox?.width ?? 0)),
+  ).toBeGreaterThanOrEqual(3);
 
   await page.evaluate(async (id) => {
     await window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__?.({
@@ -195,7 +204,6 @@ test("shows upload feedback before transferring a large file", async ({
   const uploadingPercentageBox = await page
     .getByTestId("composer-upload-percentage")
     .boundingBox();
-  expect(processingPercentageBox).not.toBeNull();
   expect(uploadingPercentageBox).not.toBeNull();
   expect(uploadingPercentageBox?.x ?? 0).toBeLessThan(
     processingPercentageBox?.x ?? 0,
