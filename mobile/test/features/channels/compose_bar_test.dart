@@ -2108,6 +2108,12 @@ void main() {
       expect(galleryPickerCalled, isFalse);
       expect(uploadedBytes, isNull);
       expect(find.byTooltip('Remove attachment'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is Image && widget.image is MemoryImage,
+        ),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byIcon(LucideIcons.arrowUp));
       await tester.pumpAndSettle();

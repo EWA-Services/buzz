@@ -614,6 +614,8 @@ class _AttachmentStrip extends StatelessWidget {
                             ),
                           ),
                         )
+                      : attachment.kind == _PendingAttachmentKind.image
+                      ? _MemoryAttachmentImage(file: attachment.file)
                       : ColoredBox(
                           color: context.colors.surface,
                           child: Padding(
@@ -674,6 +676,34 @@ class _AttachmentStrip extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _MemoryAttachmentImage extends HookWidget {
+  final XFile file;
+
+  const _MemoryAttachmentImage({required this.file});
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = useFuture(useMemoized(() => file.readAsBytes(), [file]));
+    final data = bytes.data;
+
+    if (data == null || data.isEmpty) {
+      return ColoredBox(
+        color: context.colors.surface,
+        child: Icon(LucideIcons.image, color: context.colors.onSurfaceVariant),
+      );
+    }
+
+    return Image.memory(
+      data,
+      fit: BoxFit.cover,
+      errorBuilder: (_, _, _) => ColoredBox(
+        color: context.colors.surface,
+        child: Icon(LucideIcons.image, color: context.colors.onSurfaceVariant),
       ),
     );
   }

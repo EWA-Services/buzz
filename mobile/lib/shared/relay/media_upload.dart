@@ -76,6 +76,8 @@ typedef SanitizeImageBytes =
     Future<Uint8List> Function(Uint8List bytes, String mimeType);
 typedef TranscodeImageToJpeg = Future<Uint8List> Function(Uint8List bytes);
 typedef TranscodeVideoToMp4 = Future<String> Function(String filePath);
+
+/// Generates poster-frame bytes for the video at [filePath], when available.
 typedef GenerateVideoPoster = Future<Uint8List?> Function(String filePath);
 typedef ReadClipboardImage = Future<Uint8List?> Function();
 
@@ -99,6 +101,7 @@ class UploadCancellationToken {
   }
 }
 
+/// Indicates that a user cancelled a media upload before it completed.
 class UploadCancelledException implements Exception {
   const UploadCancelledException();
 }

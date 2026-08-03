@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/theme/theme.dart';
@@ -13,7 +14,7 @@ import '../activity/activity_page.dart';
 import '../channels/channels_page.dart';
 import '../search/search_page.dart';
 
-class HomePage extends HookWidget {
+class HomePage extends HookConsumerWidget {
   const HomePage({
     required this.settingsPageBuilder,
     required this.hasUnreadInbox,
@@ -60,7 +61,7 @@ class HomePage extends HookWidget {
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final tabIndex = useState(0);
     final tabContentTransitionDirection = useRef(1.0);
     final tabContentTransitionController = useAnimationController(
