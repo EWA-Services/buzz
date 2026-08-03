@@ -103,11 +103,6 @@ export function CommunityThemeController() {
 
     const applyRemote = (remote: RemoteCommunityTheme) => {
       if (scopeRef.current !== scope) return;
-      const dirty = readCommunityThemeOutbox(pubkey, relayUrl);
-      if (dirty) {
-        manager.publish(dirty);
-        return;
-      }
       const last = lastRemoteRef.current;
       if (!isNewerCommunityThemeCoordinate(remote, last)) {
         return;
@@ -116,6 +111,12 @@ export function CommunityThemeController() {
         createdAt: remote.createdAt,
         eventId: remote.eventId,
       };
+      manager.acceptRemote(remote);
+      const dirty = readCommunityThemeOutbox(pubkey, relayUrl);
+      if (dirty) {
+        manager.publish(dirty);
+        return;
+      }
       scopedPreferenceRef.current = remote.preference;
       manager.cancelPendingPublish();
       cacheAndApplyCommunityTheme(

@@ -122,22 +122,76 @@ test("only confirmed absence permits seeding relay state", () => {
   assert.equal(shouldSeedCommunityTheme({ status: "unavailable" }), false);
 });
 
-test("acknowledged coordinates reject delayed same-second remotes", () => {
+test("acknowledged coordinates use relay same-second ordering", () => {
   const acknowledged = { createdAt: 123, eventId: "published" };
   assert.equal(
     isNewerCommunityThemeCoordinate(
-      { createdAt: 123, eventId: "older" },
-      acknowledged,
-    ),
-    false,
-  );
-  assert.equal(
-    isNewerCommunityThemeCoordinate(
-      { createdAt: 123, eventId: "z-newer" },
+      { createdAt: 123, eventId: "a-winner" },
       acknowledged,
     ),
     true,
   );
+  assert.equal(
+    isNewerCommunityThemeCoordinate(
+      { createdAt: 123, eventId: "z-loser" },
+      acknowledged,
+    ),
+    false,
+  );
+});
+
+test("new remote invalidates no-op suppression for A to B to A", async () => {
+  const timer = installFakeTimer();
+  const published = [];
+  const acknowledgements = [];
+  let signedEventId = "published-z";
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      if (command === "nip44_encrypt_to_self") return Promise.resolve("cipher");
+      if (command === "sign_event") {
+        return Promise.resolve(
+          JSON.stringify(
+            relayEvent({
+              id: signedEventId,
+              content: args.content,
+              created_at: args.createdAt,
+            }),
+          ),
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  };
+  mock.method(relayClient, "publishEvent", (event) => {
+    published.push(event);
+    return Promise.resolve();
+  });
+  try {
+    const manager = new CommunityThemeSyncManager("alice", (event) => {
+      acknowledgements.push(event);
+    });
+    manager.publish(preference);
+    timer.fire();
+    await waitUntil(() => published.length === 1);
+
+    manager.acceptRemote({
+      preference: { ...preference, theme: "dracula" },
+      createdAt: published[0].created_at,
+      eventId: "remote-a",
+    });
+    signedEventId = "republished-a";
+    manager.publish(preference);
+    timer.fire();
+    await waitUntil(() => published.length === 2);
+
+    assert.equal(acknowledgements.length, 2);
+    assert.equal(acknowledgements[1].eventId, "republished-a");
+    assert.equal(manager.getPending(), null);
+  } finally {
+    delete globalThis.window.__TAURI_INTERNALS__;
+    timer.restore();
+    mock.reset();
+  }
 });
 
 test("transient publish failure retries and acknowledges exact event", async () => {

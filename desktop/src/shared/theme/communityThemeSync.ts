@@ -40,7 +40,7 @@ export function isNewerCommunityThemeCoordinate(
   return (
     candidate.createdAt > current.createdAt ||
     (candidate.createdAt === current.createdAt &&
-      candidate.eventId > current.eventId)
+      (current.eventId === "" || candidate.eventId < current.eventId))
   );
 }
 
@@ -127,6 +127,21 @@ export class CommunityThemeSyncManager {
 
   getPending(): CommunityThemePreference | null {
     return this.pending;
+  }
+
+  acceptRemote(remote: RemoteCommunityTheme): void {
+    this.lastRemoteCreatedAt = Math.max(
+      this.lastRemoteCreatedAt,
+      remote.createdAt,
+    );
+    const lastPublished = this.lastPublished;
+    if (
+      lastPublished &&
+      (lastPublished.createdAt !== remote.createdAt ||
+        lastPublished.eventId !== remote.eventId)
+    ) {
+      this.lastPublished = null;
+    }
   }
 
   cancelPendingPublish(): void {
