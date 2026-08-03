@@ -425,6 +425,7 @@ test("multi-repository projects switch the active repository", async ({
   );
 
   await page.getByTestId("add-project-repository").click();
+  await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("mobile-app");
   await page.getByTestId("add-project-repository-submit").click();
   await expect(page.getByTestId("add-project-repository-dialog")).toBeHidden();
@@ -443,6 +444,31 @@ test("multi-repository projects switch the active repository", async ({
       ) ?? [],
   );
   expect(addedEvents.map((event) => event.kind)).toEqual([30621, 30617]);
+
+  await page.getByTestId("add-project-repository").click();
+  await page.getByTestId("attach-project-repository").click();
+  await expect(
+    page.getByTestId("attach-project-repository-dialog"),
+  ).toBeVisible();
+  await page.getByTestId("attach-existing-repository-design-system").click();
+  await expect(
+    page.getByTestId("attach-project-repository-dialog"),
+  ).toBeHidden();
+  await expect(picker).toContainText("design-system");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_ACCEPTED_PROJECT_EVENTS__?.some(
+            (event) =>
+              event.kind === 30621 &&
+              event.tags.some(
+                (tag) => tag[0] === "a" && tag[1]?.endsWith(":design-system"),
+              ),
+          ) ?? false,
+      ),
+    )
+    .toBe(true);
 });
 
 test("commit detail opens from the commits feed with a diff", async ({

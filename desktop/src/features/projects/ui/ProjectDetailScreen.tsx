@@ -28,7 +28,6 @@ import { useOptimisticProjectBranches } from "@/features/projects/useOptimisticP
 import { useProjectRepositoryRefSelection } from "@/features/projects/useProjectRepositoryRefSelection";
 import { useUpdateProjectPullRequestMutation } from "@/features/projects/pullRequestMutations";
 import { useCreateProjectIssueMutation } from "@/features/projects/issueMutations";
-import { useAddProjectRepositoryMutation } from "@/features/projects/useAddProjectRepository";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
 import {
@@ -63,7 +62,6 @@ import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelp
 import { selectProjectRepository } from "@/features/projects/projectModels";
 import { useProjectRepoPresentation } from "@/features/projects/useProjectRepoHost";
 import { WorkspaceTabs } from "./ProjectWorkspaceTabs";
-import { ProjectRepositoryPicker } from "./ProjectRepositoryPicker";
 import type { RepoSourceHeaderControls } from "./ProjectRepositorySource";
 import { showProjectCloneErrorToast } from "./projectGitErrorToast";
 import {
@@ -72,8 +70,8 @@ import {
 } from "./useOpenProjectTerminal";
 import type { CreateIssueDialogInput } from "./CreateIssueDialog";
 import { ProjectBranchActionDialogs } from "./ProjectBranchActionDialogs";
-import { AddProjectRepositoryDialog } from "./AddProjectRepositoryDialog";
 import { ProjectDetailChrome } from "./ProjectDetailChrome";
+import { ProjectRepositoryManagement } from "./ProjectRepositoryManagement";
 import { UnavailableProjectRepositories } from "./UnavailableProjectRepositories";
 import {
   PROJECT_TAB_CRUMB_LABELS,
@@ -166,11 +164,9 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   // Bumped when breadcrumb navigation should land on the project Overview
   // tab; remounts WorkspaceTabs, which owns the selected-tab state.
   const [tabsResetKey, setTabsResetKey] = React.useState(0);
-  const [addRepositoryOpen, setAddRepositoryOpen] = React.useState(false);
   // Mirror of the WorkspaceTabs selection so the breadcrumb can name the
   // active sub-tab. The Overview (readme) tab is "home" and gets no crumb.
   const [activeTab, setActiveTab] = React.useState("overview");
-  const addRepositoryMutation = useAddProjectRepositoryMutation();
   // Commit, PR, and issue details are mutually exclusive views, so opening
   // one clears the others.
   const handleSelectedPullRequestIdChange = React.useCallback(
@@ -829,17 +825,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         activeBranchCommit={activeBranchCommit}
         existingBranches={branchOptionsWithLocal}
       />
-      <AddProjectRepositoryDialog
-        isCreating={addRepositoryMutation.isPending}
-        onAdd={async (input) => {
-          const result = await addRepositoryMutation.mutateAsync(input);
-          handleRepositoryChange(result.repository.id);
-          toast.success(`Repository "${result.repository.name}" added.`);
-        }}
-        onOpenChange={setAddRepositoryOpen}
-        open={addRepositoryOpen}
-        project={project}
-      />
       <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ProjectDetailChrome
@@ -890,15 +875,11 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                     <span className="hidden text-xs font-medium text-muted-foreground sm:inline">
                       Repository
                     </span>
-                    <ProjectRepositoryPicker
-                      onAdd={
-                        identityQuery.data?.pubkey.toLowerCase() ===
-                        project.owner.toLowerCase()
-                          ? () => setAddRepositoryOpen(true)
-                          : undefined
-                      }
+                    <ProjectRepositoryManagement
+                      identityPubkey={identityQuery.data?.pubkey}
                       onChange={handleRepositoryChange}
                       project={project}
+                      projects={projectsQuery.data ?? []}
                       repository={repository}
                     />
                   </div>

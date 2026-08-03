@@ -1,4 +1,11 @@
-import { Check, ChevronDown, GitBranch, Plus } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  FolderPlus,
+  GitBranch,
+  Link,
+  Plus,
+} from "lucide-react";
 
 import type { Project, Repository } from "@/features/projects/hooks";
 import { Button } from "@/shared/ui/button";
@@ -11,13 +18,15 @@ import {
 } from "@/shared/ui/dropdown-menu";
 
 export function ProjectRepositoryPicker({
-  onAdd,
+  onAttach,
   onChange,
+  onCreate,
   project,
   repository,
 }: {
-  onAdd?: () => void;
+  onAttach?: () => void;
   onChange: (repositoryId: string) => void;
+  onCreate?: () => void;
   project: Project;
   repository: Repository;
 }) {
@@ -84,18 +93,37 @@ export function ProjectRepositoryPicker({
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-      {onAdd ? (
-        <Button
-          aria-label="Add repository"
-          className="h-8 w-8 shrink-0"
-          data-testid="add-project-repository"
-          onClick={onAdd}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+      {onCreate && onAttach ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label="Add repository"
+              className="h-8 w-8 shrink-0"
+              data-testid="add-project-repository"
+              size="icon"
+              type="button"
+              variant="outline"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              data-testid="create-project-repository"
+              onSelect={onCreate}
+            >
+              <FolderPlus className="h-4 w-4" />
+              Create new repository
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="attach-project-repository"
+              onSelect={onAttach}
+            >
+              <Link className="h-4 w-4" />
+              Add existing repository
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       ) : null}
     </div>
   );

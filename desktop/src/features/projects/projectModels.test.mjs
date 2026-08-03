@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  addRepositoryToProject,
   buildProjectReadModels,
   eventToRepository,
   selectProjectRepository,
@@ -142,6 +143,27 @@ test("project and repository routes stay distinct when coordinates share a d tag
     projectMatchesRouteId(explicitProject, implicitProject.projectAddress),
     false,
   );
+});
+
+test("addRepositoryToProject promotes a legacy repository route to a project coordinate", () => {
+  const [legacyProject] = buildProjectReadModels({
+    projectEvents: [],
+    repositoryEvents: [repositoryEvent(PROJECT_OWNER, "sprout")],
+    relayOrigin: RELAY_ORIGIN,
+  });
+  const attachedRepository = eventToRepository(
+    repositoryEvent(PROJECT_OWNER, "mobile"),
+    RELAY_ORIGIN,
+  );
+  const updated = addRepositoryToProject(
+    legacyProject,
+    attachedRepository,
+    300,
+  );
+
+  assert.equal(updated.id, `30621:${PROJECT_OWNER}:sprout`);
+  assert.equal(updated.legacy, false);
+  assert.equal(updated.repositories.length, 2);
 });
 
 test("selectProjectRepository honors a request and falls back to primary", () => {

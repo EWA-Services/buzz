@@ -19,6 +19,70 @@ function repositoryDtagFromName(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+function buildProjectReplacementTemplate({
+  ownerPubkey,
+  project,
+  repositoryAddresses,
+}: {
+  ownerPubkey: string;
+  project: Project;
+  repositoryAddresses: string[];
+}): ProjectEventTemplate {
+  const normalizedOwner = ownerPubkey.trim().toLowerCase();
+  if (normalizedOwner !== project.owner.toLowerCase()) {
+    throw new Error("Only the project owner can add repositories.");
+  }
+  if (repositoryAddresses.length > 64) {
+    throw new Error("A project cannot contain more than 64 repositories.");
+  }
+  if (new Set(repositoryAddresses).size !== repositoryAddresses.length) {
+    throw new Error("A project cannot contain duplicate repositories.");
+  }
+  if (
+    repositoryAddresses.some(
+      (address) => !/^30617:[0-9a-f]{64}:.+$/i.test(address),
+    )
+  ) {
+    throw new Error("Repository address is invalid.");
+  }
+
+  const tags: string[][] = [
+    ["d", project.dtag],
+    ["name", project.name],
+  ];
+  if (project.description) tags.push(["description", project.description]);
+  if (project.projectChannelId) {
+    tags.push(["buzz-channel", project.projectChannelId]);
+  }
+  if (project.visibility === "unlisted") {
+    tags.push(["buzz-visibility", "unlisted"]);
+  }
+  for (const address of repositoryAddresses.sort()) {
+    const relayHint = project.repositoryRelayHints?.[address];
+    tags.push(relayHint ? ["a", address, relayHint] : ["a", address]);
+  }
+  return { kind: KIND_PROJECT_ANNOUNCEMENT, content: "", tags };
+}
+
+export function buildAttachedRepositoryProjectEventTemplate({
+  ownerPubkey,
+  project,
+  repositoryAddress,
+}: {
+  ownerPubkey: string;
+  project: Project;
+  repositoryAddress: string;
+}): ProjectEventTemplate {
+  if (project.repositoryAddresses.includes(repositoryAddress)) {
+    throw new Error("This repository is already part of the project.");
+  }
+  return buildProjectReplacementTemplate({
+    ownerPubkey,
+    project,
+    repositoryAddresses: [...project.repositoryAddresses, repositoryAddress],
+  });
+}
+
 export function buildAddedRepositoryEventTemplates({
   cloneUrl,
   description,
@@ -35,9 +99,6 @@ export function buildAddedRepositoryEventTemplates({
   webUrl?: string;
 }): AddedRepositoryEventTemplates {
   const normalizedOwner = ownerPubkey.trim().toLowerCase();
-  if (normalizedOwner !== project.owner.toLowerCase()) {
-    throw new Error("Only the project owner can add repositories.");
-  }
 
   const normalizedName = name.trim();
   if (!normalizedName) throw new Error("Repository name is required.");
@@ -56,10 +117,6 @@ export function buildAddedRepositoryEventTemplates({
   ) {
     throw new Error(`This project already contains "${repositoryDtag}".`);
   }
-  if (!isUnavailableMember && project.repositoryAddresses.length >= 64) {
-    throw new Error("A project cannot contain more than 64 repositories.");
-  }
-
   const normalizedDescription = description?.trim() ?? "";
   const repositoryTags: string[][] = [
     ["d", repositoryDtag],
@@ -73,33 +130,16 @@ export function buildAddedRepositoryEventTemplates({
   const normalizedWebUrl = webUrl?.trim();
   if (normalizedWebUrl) repositoryTags.push(["web", normalizedWebUrl]);
 
-  const projectTags: string[][] = [
-    ["d", project.dtag],
-    ["name", project.name],
-  ];
-  if (project.description) {
-    projectTags.push(["description", project.description]);
-  }
-  if (project.projectChannelId) {
-    projectTags.push(["buzz-channel", project.projectChannelId]);
-  }
-  if (project.visibility === "unlisted") {
-    projectTags.push(["buzz-visibility", "unlisted"]);
-  }
-  for (const address of project.repositoryAddresses) {
-    const relayHint = project.repositoryRelayHints?.[address];
-    projectTags.push(relayHint ? ["a", address, relayHint] : ["a", address]);
-  }
-  if (!isUnavailableMember) {
-    projectTags.push(["a", repositoryAddress]);
-  }
+  const projectTemplate = buildProjectReplacementTemplate({
+    ownerPubkey,
+    project,
+    repositoryAddresses: isUnavailableMember
+      ? [...project.repositoryAddresses]
+      : [...project.repositoryAddresses, repositoryAddress],
+  });
 
   return {
-    project: {
-      kind: KIND_PROJECT_ANNOUNCEMENT,
-      content: "",
-      tags: projectTags,
-    },
+    project: projectTemplate,
     repository: {
       kind: KIND_REPO_ANNOUNCEMENT,
       content: normalizedDescription,

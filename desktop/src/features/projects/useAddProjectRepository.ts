@@ -7,7 +7,10 @@ import {
 } from "@/features/projects/hooks";
 import { isUnsupportedProjectKindError } from "@/features/projects/projectCreation";
 import { buildAddedRepositoryEventTemplates } from "@/features/projects/projectRepositoryCreation";
-import { eventToRepository } from "@/features/projects/projectModels";
+import {
+  addRepositoryToProject,
+  eventToRepository,
+} from "@/features/projects/projectModels";
 import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
@@ -26,6 +29,7 @@ async function addProjectRepository({
   project,
   ...input
 }: AddProjectRepositoryInput): Promise<{
+  previousProjectId: string;
   project: Project;
   repository: Repository;
 }> {
@@ -72,34 +76,14 @@ async function addProjectRepository({
   if (!repository) {
     throw new Error("The repository was created but could not be read.");
   }
-  const repositoryAddresses = [
-    ...new Set([...project.repositoryAddresses, repository.repoAddress]),
-  ].sort();
-  const repositories = [
-    ...project.repositories.filter(
-      (candidate) => candidate.repoAddress !== repository.repoAddress,
-    ),
-    repository,
-  ].sort((left, right) => left.repoAddress.localeCompare(right.repoAddress));
 
   return {
-    project: {
-      ...project,
-      createdAt: projectEvent.created_at,
-      legacy: false,
-      projectAddress: `${KIND_PROJECT_ANNOUNCEMENT}:${project.owner}:${project.dtag}`,
-      primaryRepositoryAddress:
-        repositories.find((candidate) => candidate.dtag === project.dtag)
-          ?.repoAddress ??
-        repositories[0]?.repoAddress ??
-        null,
-      repositoryAddresses,
-      repositories,
-      unavailableRepositoryAddresses:
-        project.unavailableRepositoryAddresses?.filter(
-          (address) => address !== repository.repoAddress,
-        ) ?? [],
-    },
+    previousProjectId: project.id,
+    project: addRepositoryToProject(
+      project,
+      repository,
+      projectEvent.created_at,
+    ),
     repository,
   };
 }
@@ -108,11 +92,17 @@ export function useAddProjectRepositoryMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: addProjectRepository,
-    onSuccess: ({ project }) => {
+    onSuccess: ({ previousProjectId, project }) => {
       queryClient.setQueryData(["project", project.id], project);
+      if (previousProjectId !== project.id) {
+        queryClient.removeQueries({
+          exact: true,
+          queryKey: ["project", previousProjectId],
+        });
+      }
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) =>
         current.map((candidate) =>
-          candidate.id === project.id ? project : candidate,
+          candidate.id === previousProjectId ? project : candidate,
         ),
       );
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });

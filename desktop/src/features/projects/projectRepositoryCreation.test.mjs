@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAddedRepositoryEventTemplates } from "./projectRepositoryCreation.ts";
+import {
+  buildAddedRepositoryEventTemplates,
+  buildAttachedRepositoryProjectEventTemplate,
+} from "./projectRepositoryCreation.ts";
 
 const OWNER = "a".repeat(64);
 const OTHER_OWNER = "b".repeat(64);
@@ -50,10 +53,23 @@ test("buildAddedRepositoryEventTemplates preserves NIP-MP project metadata and m
     ["description", "A multi-repository workspace"],
     ["buzz-channel", "11111111-1111-4111-8111-111111111111"],
     ["a", `30617:${OWNER}:desktop`],
-    ["a", `30617:${OTHER_OWNER}:relay`, "wss://relay.example"],
     ["a", `30617:${OWNER}:mobile-app`],
+    ["a", `30617:${OTHER_OWNER}:relay`, "wss://relay.example"],
   ]);
   assert.equal(templates.project.content, "");
+});
+
+test("buildAttachedRepositoryProjectEventTemplate links an existing repository", () => {
+  const repositoryAddress = `30617:${"c".repeat(64)}:design-system`;
+  const template = buildAttachedRepositoryProjectEventTemplate({
+    project,
+    ownerPubkey: OWNER,
+    repositoryAddress,
+  });
+
+  assert.equal(template.kind, 30621);
+  assert.equal(template.content, "");
+  assert.deepEqual(template.tags.at(-1), ["a", repositoryAddress]);
 });
 
 test("buildAddedRepositoryEventTemplates rejects updates by another owner", () => {

@@ -348,3 +348,40 @@ export function selectProjectRepository(
     null
   );
 }
+
+/** Returns the optimistic read model after adding a resolved repository. */
+export function addRepositoryToProject(
+  project: Project,
+  repository: Repository,
+  createdAt: number,
+): Project {
+  const projectAddress = `${KIND_PROJECT_ANNOUNCEMENT}:${project.owner}:${project.dtag}`;
+  const repositoryAddresses = [
+    ...new Set([...project.repositoryAddresses, repository.repoAddress]),
+  ].sort();
+  const repositories = [
+    ...project.repositories.filter(
+      (candidate) => candidate.repoAddress !== repository.repoAddress,
+    ),
+    repository,
+  ].sort((left, right) => left.repoAddress.localeCompare(right.repoAddress));
+
+  return {
+    ...project,
+    id: projectAddress,
+    createdAt,
+    legacy: false,
+    projectAddress,
+    primaryRepositoryAddress:
+      repositories.find((candidate) => candidate.dtag === project.dtag)
+        ?.repoAddress ??
+      repositories[0]?.repoAddress ??
+      null,
+    repositoryAddresses,
+    repositories,
+    unavailableRepositoryAddresses:
+      project.unavailableRepositoryAddresses?.filter(
+        (address) => address !== repository.repoAddress,
+      ) ?? [],
+  };
+}
