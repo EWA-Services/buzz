@@ -60,6 +60,19 @@ pub struct Config {
     /// `0` (the default) disables bounded-staleness replica routing; see
     /// [`buzz_db::DbConfig::replica_read_max_age_ms`].
     pub replica_read_max_age_ms: u64,
+
+    /// Upper bound, in milliseconds, of the per-connection random delay applied
+    /// when sending the `1012 Service Restart` close frame during graceful
+    /// shutdown (`BUZZ_DRAIN_JITTER_MS`). Each live connection is closed after
+    /// an independent delay drawn uniformly from `[0, drain_jitter_ms]`, which
+    /// spreads client reconnects across the window instead of releasing the
+    /// whole pod's sockets in one instant (the reconnect thundering herd that
+    /// drives DB pool-timeout bursts on rolling deploys).
+    ///
+    /// Default `0` reproduces the previous all-at-once close. Values are capped
+    /// at shutdown to leave headroom under the 30s hard-drain timeout; keep it
+    /// well below `terminationGracePeriodSeconds`.
+    pub drain_jitter_ms: u64,
     /// Redis connection URL used by the pub/sub manager.
     pub redis_url: String,
     /// Maximum connections in the shared Redis pool. Defaults to 16.
@@ -448,6 +461,18 @@ impl Config {
             Ok(raw) => raw.trim().parse::<u64>().map_err(|_| {
                 ConfigError::InvalidValue(
                     "BUZZ_REPLICA_READ_MAX_AGE_MS must be a non-negative integer".to_string(),
+                )
+            })?,
+            Err(_) => 0,
+        };
+
+        // Drain jitter: 0 = off (default). Non-negative parse, same shape as
+        // the replica-read budget above. Bound is enforced (capped) at
+        // shutdown, not here, so config never fails on a large value.
+        let drain_jitter_ms = match std::env::var("BUZZ_DRAIN_JITTER_MS") {
+            Ok(raw) => raw.trim().parse::<u64>().map_err(|_| {
+                ConfigError::InvalidValue(
+                    "BUZZ_DRAIN_JITTER_MS must be a non-negative integer".to_string(),
                 )
             })?,
             Err(_) => 0,
@@ -934,6 +959,7 @@ impl Config {
             database_url,
             read_database_url,
             replica_read_max_age_ms,
+            drain_jitter_ms,
             redis_url,
             redis_pool_size,
             db_pool_size,
@@ -1265,6 +1291,38 @@ mod tests {
             ),
             other => panic!("old env name must hard-fail startup, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn drain_jitter_defaults_off_and_rejects_junk() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let previous = std::env::var_os("BUZZ_DRAIN_JITTER_MS");
+
+        std::env::remove_var("BUZZ_DRAIN_JITTER_MS");
+        let unset = Config::from_env().expect("config").drain_jitter_ms;
+
+        std::env::set_var("BUZZ_DRAIN_JITTER_MS", "20000");
+        let set = Config::from_env().expect("config").drain_jitter_ms;
+
+        std::env::set_var("BUZZ_DRAIN_JITTER_MS", "0");
+        let zero = Config::from_env().expect("config").drain_jitter_ms;
+
+        std::env::set_var("BUZZ_DRAIN_JITTER_MS", "soon");
+        let junk = Config::from_env();
+
+        if let Some(value) = previous {
+            std::env::set_var("BUZZ_DRAIN_JITTER_MS", value);
+        } else {
+            std::env::remove_var("BUZZ_DRAIN_JITTER_MS");
+        }
+
+        assert_eq!(unset, 0, "drain jitter must default off");
+        assert_eq!(set, 20_000);
+        assert_eq!(zero, 0, "explicit 0 is off");
+        assert!(
+            junk.is_err(),
+            "an unparsable jitter must fail loudly, not silently disable"
+        );
     }
 
     #[test]

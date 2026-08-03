@@ -1207,6 +1207,7 @@ async fn serve(
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
     let shutdown_flag = Arc::clone(&state.shutting_down);
     let drain_conn_manager = Arc::clone(&state.conn_manager);
+    let drain_jitter_ms = state.config.drain_jitter_ms;
     let tx = shutdown_tx.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
@@ -1221,10 +1222,16 @@ async fn serve(
         // dying pod until the forced exit below and only learn about the
         // restart from a TCP reset. The 1012 close frame turns a 35s silent
         // death into an immediate, well-attributed reconnect.
-        let closed = drain_conn_manager.drain_all();
+        //
+        // With BUZZ_DRAIN_JITTER_MS > 0, the closes are spread across the
+        // jitter window instead of firing all at once, so a pod's clients do
+        // not reconnect in a single thundering herd. The 30s hard timeout
+        // below backstops the window; keep the jitter well under it.
+        let closed = drain_conn_manager.drain_all_jittered(drain_jitter_ms);
         info!(
             connections = closed,
-            "Sent restart close frame to all live WebSocket connections"
+            jitter_ms = drain_jitter_ms,
+            "Signalled restart close to all live WebSocket connections"
         );
         // Hard timeout: force exit if connections don't drain within 30s.
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
