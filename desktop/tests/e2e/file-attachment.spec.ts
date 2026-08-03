@@ -38,6 +38,18 @@ async function chooseQuarterlyReport(page: Page) {
   });
 }
 
+async function chooseLargeVideo(page: Page) {
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Attach image" }).click(),
+  ]);
+  await chooser.setFiles({
+    buffer: Buffer.alloc(16 * 1024 * 1024, 1),
+    mimeType: "video/mp4",
+    name: "large-video.mp4",
+  });
+}
+
 test("upload a file and see a FileCard in the timeline", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("channel-general").click();
@@ -111,6 +123,48 @@ test("sends immediately and keeps upload progress across channels", async ({
   await expect(page.getByTestId("file-card").last()).toContainText(
     "quarterly-report.pdf",
   );
+});
+
+test("shows upload feedback before transferring a large file", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const e2e = (
+      window as Window & {
+        __BUZZ_E2E__?: { mock?: { uploadDelayMs?: number } };
+      }
+    ).__BUZZ_E2E__;
+    if (e2e?.mock) e2e.mock.uploadDelayMs = 1_000;
+  });
+  await page.getByTestId("channel-general").click();
+  await chooseLargeVideo(page);
+
+  const progress = page.getByTestId("composer-upload-progress");
+  await Promise.all([
+    page.getByTestId("send-message").click(),
+    expect(progress).toBeVisible({ timeout: 800 }),
+  ]);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_COMMAND_PAYLOADS__?: Array<{
+                command: string;
+                payload: { rawByteLength?: number } | null;
+              }>;
+            }
+          ).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+      ),
+    )
+    .toContainEqual({
+      command: "upload_media_bytes_raw",
+      payload: { rawByteLength: 16 * 1024 * 1024 },
+    });
+
+  await page.getByTestId("composer-upload-cancel").click();
 });
 
 test("canceling a background upload prevents the message from publishing", async ({

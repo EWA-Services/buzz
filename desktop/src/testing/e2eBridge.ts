@@ -8629,7 +8629,7 @@ async function resolveMockUploadDescriptors(
 }
 
 async function resolveMockUploadDescriptorForBytes(
-  args: { data: number[]; filename?: string | null },
+  args: { data: number[] | Uint8Array; filename?: string | null },
   config: E2eConfig | undefined,
 ): Promise<RawBlobDescriptor> {
   const configured = config?.mock?.uploadDescriptors;
@@ -9943,6 +9943,9 @@ export function maybeInstallE2eTauriMocks() {
     const identity = getActiveIdentity(activeConfig);
     window.__BUZZ_E2E_COMMANDS__?.push(command);
     const loggedPayload = (() => {
+      if (payload instanceof Uint8Array) {
+        return { rawByteLength: payload.byteLength };
+      }
       try {
         return JSON.parse(JSON.stringify(payload ?? null));
       } catch {
@@ -11812,6 +11815,13 @@ export function maybeInstallE2eTauriMocks() {
       case "upload_media_bytes":
         return resolveMockUploadDescriptorForBytes(
           payload as { data: number[]; filename?: string | null },
+          activeConfig,
+        );
+      case "upload_media_bytes_raw":
+        return resolveMockUploadDescriptorForBytes(
+          {
+            data: payload as Uint8Array,
+          },
           activeConfig,
         );
       case "fetch_media_bytes": {

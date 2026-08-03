@@ -1,4 +1,35 @@
+import { invoke as invokeTauriRaw } from "@tauri-apps/api/core";
 import { type BlobDescriptor, invokeTauri } from "./tauri";
+
+function encodeRawIpcHeader(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return window
+    .btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+/** Transfer a browser File to Rust as a raw IPC body, avoiding JSON expansion. */
+export async function uploadMediaFile(
+  file: File,
+  progressId?: string,
+): Promise<BlobDescriptor> {
+  const headers: Record<string, string> = {
+    "x-buzz-filename": encodeRawIpcHeader(file.name),
+  };
+  if (progressId) {
+    headers["x-buzz-progress-id"] = encodeRawIpcHeader(progressId);
+  }
+
+  return invokeTauriRaw<BlobDescriptor>(
+    "upload_media_bytes_raw",
+    new Uint8Array(await file.arrayBuffer()),
+    { headers },
+  );
+}
 
 /**
  * Open a native single-file picker constrained to images and upload the

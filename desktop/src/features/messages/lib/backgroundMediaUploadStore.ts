@@ -1,6 +1,7 @@
 import * as React from "react";
 
-import { type BlobDescriptor, uploadMediaBytes } from "@/shared/api/tauri";
+import type { BlobDescriptor } from "@/shared/api/tauri";
+import { uploadMediaFile } from "@/shared/api/tauriMedia";
 
 export type QueuedMediaAttachment = {
   file: File;
@@ -23,6 +24,16 @@ type EnqueueBackgroundUploadOptions = {
   attachments: QueuedMediaAttachment[];
   onComplete: (descriptors: BlobDescriptor[]) => Promise<void>;
   onError: (error: unknown) => void;
+};
+
+type StartBackgroundUploadOptions = Omit<
+  EnqueueBackgroundUploadOptions,
+  "attachments"
+>;
+
+export type PreparedBackgroundMediaUpload = {
+  cancel: () => void;
+  start: (options: StartBackgroundUploadOptions) => boolean;
 };
 
 const tasks = new Map<number, BackgroundUploadTask>();
@@ -102,14 +113,34 @@ function finishTask(taskId: number): void {
   }
 }
 
-export function enqueueBackgroundMediaUpload({
-  attachments,
-  onComplete,
-  onError,
-}: EnqueueBackgroundUploadOptions): void {
+function yieldForUploadFeedback(): Promise<void> {
+  if (
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function" ||
+    document.visibilityState === "hidden"
+  ) {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+  });
+}
+
+export function prepareBackgroundMediaUpload(
+  attachments: QueuedMediaAttachment[],
+): PreparedBackgroundMediaUpload {
   if (attachments.length === 0) {
-    void onComplete([]).catch(onError);
-    return;
+    let started = false;
+    return {
+      cancel: () => undefined,
+      start: ({ onComplete, onError }) => {
+        if (started) return false;
+        started = true;
+        void onComplete([]).catch(onError);
+        return true;
+      },
+    };
   }
 
   const taskId = nextTaskId;
@@ -119,36 +150,60 @@ export function enqueueBackgroundMediaUpload({
     fileProgress: attachments.map(() => 0),
     id: taskId,
   };
+  let started = false;
   tasks.set(taskId, task);
   rebuildSnapshot();
-  void ensureProgressListener();
 
-  void (async () => {
-    try {
-      const descriptors: BlobDescriptor[] = [];
-      for (let index = 0; index < attachments.length; index += 1) {
-        if (task.canceled) return;
-        const attachment = attachments[index];
-        const buffer = await attachment.file.arrayBuffer();
-        if (task.canceled) return;
-        const descriptor = await uploadMediaBytes(
-          [...new Uint8Array(buffer)],
-          attachment.file.name,
-          progressId(taskId, index),
-        );
-        if (task.canceled) return;
-        task.fileProgress[index] = 100;
-        rebuildSnapshot();
-        descriptors.push(descriptor);
-      }
-
-      if (!task.canceled) await onComplete(descriptors);
-    } catch (error) {
-      if (!task.canceled) onError(error);
-    } finally {
+  return {
+    cancel: () => {
+      if (task.canceled) return;
+      task.canceled = true;
       finishTask(taskId);
-    }
-  })();
+    },
+    start: ({ onComplete, onError }) => {
+      if (started || task.canceled) return false;
+      started = true;
+      void ensureProgressListener();
+
+      void (async () => {
+        try {
+          // Let React commit and paint the 0% task before file reads or native
+          // IPC begin, so large attachments never hide the initial feedback.
+          await yieldForUploadFeedback();
+          const descriptors: BlobDescriptor[] = [];
+          for (let index = 0; index < attachments.length; index += 1) {
+            if (task.canceled) return;
+            const attachment = attachments[index];
+            const descriptor = await uploadMediaFile(
+              attachment.file,
+              progressId(taskId, index),
+            );
+            if (task.canceled) return;
+            task.fileProgress[index] = 100;
+            rebuildSnapshot();
+            descriptors.push(descriptor);
+          }
+
+          if (!task.canceled) await onComplete(descriptors);
+        } catch (error) {
+          if (!task.canceled) onError(error);
+        } finally {
+          finishTask(taskId);
+        }
+      })();
+      return true;
+    },
+  };
+}
+
+export function enqueueBackgroundMediaUpload({
+  attachments,
+  onComplete,
+  onError,
+}: EnqueueBackgroundUploadOptions): PreparedBackgroundMediaUpload {
+  const preparedUpload = prepareBackgroundMediaUpload(attachments);
+  preparedUpload.start({ onComplete, onError });
+  return preparedUpload;
 }
 
 export function cancelBackgroundMediaUploads(): void {

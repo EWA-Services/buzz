@@ -14,7 +14,7 @@ import { resolvePersonaRuntime } from "@/features/agents/lib/resolvePersonaRunti
 import { useAddChannelMembersMutation } from "@/features/channels/hooks";
 import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/effectiveExplicitAgentPubkeys";
 import {
-  enqueueBackgroundMediaUpload,
+  prepareBackgroundMediaUpload,
   type QueuedMediaAttachment,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
@@ -453,6 +453,11 @@ export function useMentionSendFlow({
 
       isCompleteSendPendingRef.current = true;
       setIsCompleteSendPending(true);
+      const preparedUpload =
+        draft.queuedAttachments.length > 0
+          ? prepareBackgroundMediaUpload(draft.queuedAttachments)
+          : null;
+      let uploadStarted = false;
       try {
         const readyAgentPubkeys = new Set(
           (draft.readyAgentPubkeys ?? []).map(normalizePubkey),
@@ -517,15 +522,6 @@ export function useMentionSendFlow({
             mentionPubkeys,
           );
 
-        // Replace the sent body directly with its final post-send state before
-        // the async network send starts. This avoids an intermediate blank frame
-        // for persistent audiences while preserving the ordinary empty state.
-        if (draft.capturedChannelId === channelIdRef.current) {
-          clearComposer(
-            resolvePostSendContent?.(effectiveExplicitAgentPubkeys),
-          );
-        }
-
         const send = onSendRef.current;
         const restoreComposerAfterFailure = () => {
           if (
@@ -582,9 +578,8 @@ export function useMentionSendFlow({
           }
         };
 
-        if (draft.queuedAttachments.length > 0) {
-          enqueueBackgroundMediaUpload({
-            attachments: draft.queuedAttachments,
+        if (preparedUpload) {
+          uploadStarted = preparedUpload.start({
             onComplete: async (uploaded) => {
               try {
                 await finishSend(uploaded);
@@ -599,7 +594,19 @@ export function useMentionSendFlow({
               );
             },
           });
-        } else {
+          if (!uploadStarted) return;
+        }
+
+        // Replace the sent body directly with its final post-send state before
+        // the async network send starts. This avoids an intermediate blank frame
+        // for persistent audiences while preserving the ordinary empty state.
+        if (draft.capturedChannelId === channelIdRef.current) {
+          clearComposer(
+            resolvePostSendContent?.(effectiveExplicitAgentPubkeys),
+          );
+        }
+
+        if (!preparedUpload) {
           try {
             await finishSend([]);
           } catch {
@@ -607,6 +614,7 @@ export function useMentionSendFlow({
           }
         }
       } finally {
+        if (!uploadStarted) preparedUpload?.cancel();
         isCompleteSendPendingRef.current = false;
         if (isMountedRef.current) {
           setIsCompleteSendPending(false);

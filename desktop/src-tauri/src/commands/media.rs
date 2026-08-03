@@ -741,13 +741,7 @@ pub async fn pick_and_upload_image(
     Ok(Some(descriptor))
 }
 
-/// Upload raw bytes directly (for paste and drag-drop).
-///
-/// The renderer already has the bytes in memory from the clipboard/drag event.
-/// If the bytes are a video, they're written to a temp file, transcoded via
-/// ffmpeg, and the transcoded output is uploaded instead.
-#[tauri::command]
-pub async fn upload_media_bytes(
+pub(super) async fn upload_media_bytes_inner(
     data: Vec<u8>,
     filename: Option<String>,
     progress_id: Option<String>,

@@ -659,7 +659,6 @@ pub fn run() {
                     }
                 });
             }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -778,6 +777,7 @@ pub fn run() {
             pick_and_upload_media,
             pick_and_upload_image,
             upload_media_bytes,
+            upload_media_bytes_raw,
             download_image,
             save_png_data_url,
             download_file,
