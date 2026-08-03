@@ -24,6 +24,7 @@ type SubmitMessageEditOptions = EditDraft & {
   originalContent: string;
   ownerPubkey: string | null;
   restoreComposer: (draft: EditDraft) => void;
+  shouldRestoreComposer: () => boolean;
   save: (
     content: string,
     mediaTags?: string[][],
@@ -45,6 +46,7 @@ export async function submitMessageEdit({
   pendingImeta,
   queuedAttachments,
   restoreComposer,
+  shouldRestoreComposer,
   save,
   setUploadError,
   spoileredAttachmentUrls,
@@ -54,6 +56,9 @@ export async function submitMessageEdit({
     pendingImeta: [...pendingImeta],
     queuedAttachments: [...queuedAttachments],
     spoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
+  };
+  const restoreDraft = () => {
+    if (shouldRestoreComposer()) restoreComposer(draft);
   };
   const addedMentionPubkeys = diffAddedMentionPubkeys(
     extractMentionPubkeys(originalContent),
@@ -89,13 +94,14 @@ export async function submitMessageEdit({
         try {
           await finishEdit(uploaded);
         } catch {
-          restoreComposer(draft);
+          restoreDraft();
         }
       },
       onError: (error) => {
-        restoreComposer(draft);
+        restoreDraft();
         setUploadError(String(error));
       },
+      onCancel: restoreDraft,
     });
     return;
   }
@@ -103,6 +109,6 @@ export async function submitMessageEdit({
   try {
     await finishEdit([]);
   } catch {
-    restoreComposer(draft);
+    restoreDraft();
   }
 }

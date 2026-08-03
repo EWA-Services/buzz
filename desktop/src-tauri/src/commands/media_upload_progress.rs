@@ -37,16 +37,29 @@ pub(super) fn finish_media_upload(progress_id: Option<&str>) {
     }
 }
 
+pub(super) struct UploadAttempt<'a> {
+    pub url: String,
+    pub auth_header: &'a str,
+    pub mime: &'a str,
+    pub sha256: &'a str,
+    pub body: bytes::Bytes,
+    pub progress: Option<&'a (tauri::AppHandle, String)>,
+    pub cancellation: Option<&'a CancellationToken>,
+}
+
 pub(super) async fn send_upload_attempt(
     state: &AppState,
-    url: String,
-    auth_header: &str,
-    mime: &str,
-    sha256: &str,
-    body: bytes::Bytes,
-    progress: Option<&(tauri::AppHandle, String)>,
-    cancellation: Option<&CancellationToken>,
+    attempt: UploadAttempt<'_>,
 ) -> Result<reqwest::Response, String> {
+    let UploadAttempt {
+        url,
+        auth_header,
+        mime,
+        sha256,
+        body,
+        progress,
+        cancellation,
+    } = attempt;
     let req = state
         .http_client
         .put(url)

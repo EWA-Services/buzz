@@ -257,10 +257,6 @@ export function NewMessageScreen() {
         );
       }
 
-      if (!isMountedRef.current) {
-        return;
-      }
-
       try {
         await sendMessageMutation.mutateAsync({
           targetChannel: directMessage,
@@ -272,7 +268,7 @@ export function NewMessageScreen() {
         preparedDirectMessageRef.current = null;
         const message =
           error instanceof Error ? error.message : "Failed to send message.";
-        setSubmitErrorMessage(message);
+        if (isMountedRef.current) setSubmitErrorMessage(message);
         throw error;
       }
 

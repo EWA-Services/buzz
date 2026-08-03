@@ -16,6 +16,7 @@ export type QueuedMediaAttachment = {
 };
 
 type BackgroundUploadTask = {
+  abortController: AbortController;
   canceled: boolean;
   filePhases: BackgroundMediaUploadPhase[];
   fileProgress: Array<{ sent: number; total: number }>;
@@ -170,6 +171,7 @@ function finishTask(taskId: number): void {
 function cancelTask(task: BackgroundUploadTask): void {
   if (task.canceled || task.isCompleting) return;
   task.canceled = true;
+  task.abortController.abort();
   task.onCancel?.();
   for (let index = 0; index < task.fileProgress.length; index += 1) {
     void cancelMediaUpload(progressId(task.id, index)).catch(() => undefined);
@@ -210,6 +212,7 @@ export function prepareBackgroundMediaUpload(
   const taskId = nextTaskId;
   nextTaskId += 1;
   const task: BackgroundUploadTask = {
+    abortController: new AbortController(),
     canceled: false,
     filePhases: attachments.map(() => "preparing"),
     fileProgress: attachments.map((attachment) => ({
@@ -245,6 +248,7 @@ export function prepareBackgroundMediaUpload(
             const descriptor = await uploadMediaFile(
               attachment.file,
               progressId(taskId, index),
+              task.abortController.signal,
             );
             if (task.canceled) return;
             task.filePhases[index] = "finishing";

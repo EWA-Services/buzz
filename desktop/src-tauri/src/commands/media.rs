@@ -12,7 +12,7 @@ use super::media_transcode::{
     has_heic_extension, is_heic_file, is_video_file, transcode_and_extract_poster,
     transcode_heic_path_to_jpeg_bytes,
 };
-use super::media_upload_progress::{emit_media_upload_phase, send_upload_attempt};
+use super::media_upload_progress::{emit_media_upload_phase, send_upload_attempt, UploadAttempt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobDescriptor {
@@ -454,25 +454,29 @@ async fn do_upload(
     }
     let mut resp = send_upload_attempt(
         state,
-        format!("{base_url}/upload"),
-        &auth_header,
-        mime,
-        &sha256,
-        body.clone(),
-        progress.as_ref(),
-        cancellation,
+        UploadAttempt {
+            url: format!("{base_url}/upload"),
+            auth_header: &auth_header,
+            mime,
+            sha256: &sha256,
+            body: body.clone(),
+            progress: progress.as_ref(),
+            cancellation,
+        },
     )
     .await?;
     if should_retry_legacy_upload(resp.status()) {
         resp = send_upload_attempt(
             state,
-            format!("{base_url}/media/upload"),
-            &auth_header,
-            mime,
-            &sha256,
-            body,
-            progress.as_ref(),
-            cancellation,
+            UploadAttempt {
+                url: format!("{base_url}/media/upload"),
+                auth_header: &auth_header,
+                mime,
+                sha256: &sha256,
+                body,
+                progress: progress.as_ref(),
+                cancellation,
+            },
         )
         .await?;
     }

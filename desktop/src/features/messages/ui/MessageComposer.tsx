@@ -15,7 +15,6 @@ import {
   restoreImetaMediaDisplayLabels,
   stripImetaMediaLines,
 } from "@/features/messages/lib/imetaMediaMarkdown";
-
 import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditing";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import {
@@ -56,9 +55,7 @@ import { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionH
 import { useComposerContentState } from "./useComposerContentState";
 import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot";
 import { submitMessageEdit } from "./submitMessageEdit";
-
 import type { MessageComposerProps } from "./MessageComposer.types";
-
 function MessageComposerImpl({
   audienceContext = null,
   channelId = null,
@@ -105,12 +102,10 @@ function MessageComposerImpl({
   >(() => new Set());
   const spoileredAttachmentUrlsRef = React.useRef(spoileredAttachmentUrls);
   spoileredAttachmentUrlsRef.current = spoileredAttachmentUrls;
-
   const handleFormattingToggle = React.useCallback((pressed: boolean) => {
     if (pressed) setIsEmojiPickerOpen(false);
     setIsFormattingOpen(pressed);
   }, []);
-
   const drafts = useDrafts();
   const identityQuery = useIdentityQuery();
   const effectiveDraftKey = draftKey ?? channelId;
@@ -145,6 +140,11 @@ function MessageComposerImpl({
   );
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
+  const canRestoreEditDraftRef = React.useRef(false);
+  canRestoreEditDraftRef.current =
+    contentRef.current.trim().length === 0 &&
+    media.pendingImetaRef.current.length === 0 &&
+    media.queuedAttachmentsRef.current.length === 0;
   const ownsDropZone = mediaController === undefined;
   const backgroundUpload = useBackgroundMediaUpload();
 
@@ -178,7 +178,6 @@ function MessageComposerImpl({
     channelLinks.clearChannels();
     emojiAutocomplete.clearEmojis();
   }, [effectiveDraftKey]);
-
   const disabledRef = React.useRef(disabled);
   const isSendingRef = React.useRef(isSending);
   const isUploadingRef = React.useRef(media.isUploading);
@@ -547,6 +546,7 @@ function MessageComposerImpl({
           media.restoreQueuedAttachments(draft.queuedAttachments);
           setSpoileredAttachmentUrls(draft.spoileredAttachmentUrls);
         },
+        shouldRestoreComposer: () => canRestoreEditDraftRef.current,
         setUploadError: (message) =>
           media.setUploadState({ status: "error", message }),
       });

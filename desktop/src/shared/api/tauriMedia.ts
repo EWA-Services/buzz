@@ -16,6 +16,7 @@ function encodeRawIpcHeader(value: string): string {
 export async function uploadMediaFile(
   file: File,
   progressId?: string,
+  signal?: AbortSignal,
 ): Promise<BlobDescriptor> {
   const headers: Record<string, string> = {
     "x-buzz-filename": encodeRawIpcHeader(file.name),
@@ -24,11 +25,13 @@ export async function uploadMediaFile(
     headers["x-buzz-progress-id"] = encodeRawIpcHeader(progressId);
   }
 
-  return invokeTauriRaw<BlobDescriptor>(
-    "upload_media_bytes_raw",
-    new Uint8Array(await file.arrayBuffer()),
-    { headers },
-  );
+  if (signal?.aborted) throw new Error("upload cancelled");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (signal?.aborted) throw new Error("upload cancelled");
+
+  return invokeTauriRaw<BlobDescriptor>("upload_media_bytes_raw", bytes, {
+    headers,
+  });
 }
 
 /** Stop the native HTTP request associated with a background media upload. */
