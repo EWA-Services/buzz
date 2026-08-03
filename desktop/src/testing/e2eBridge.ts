@@ -1051,6 +1051,15 @@ declare global {
       command: string;
       payload: unknown;
     }>;
+    __BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__?: (input: {
+      id: string;
+      phase: string;
+    }) => Promise<void>;
+    __BUZZ_E2E_EMIT_MEDIA_UPLOAD_PROGRESS__?: (input: {
+      id: string;
+      sent: number;
+      total: number;
+    }) => Promise<void>;
     __BUZZ_E2E_WEBVIEW_ZOOM__?: number;
     __BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?: (input: {
       channelName: string;
@@ -9638,6 +9647,12 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
   window.__BUZZ_E2E_SIGNED_EVENTS__ = [];
   window.__BUZZ_E2E_WEBVIEW_ZOOM__ = 1;
+  window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__ = async (input) => {
+    await emit("media-upload-phase", input);
+  };
+  window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PROGRESS__ = async (input) => {
+    await emit("media-upload-progress", input);
+  };
   window.__BUZZ_E2E_SET_MOCK_HUDDLE_SNAPSHOT__ = async ({
     members,
     transcriptionEnabled,

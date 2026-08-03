@@ -5,15 +5,13 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::relay::{
-    classify_request_error, parse_json_response, relay_api_base_url_with_override,
-    relay_error_message,
-};
+use crate::relay::{parse_json_response, relay_api_base_url_with_override, relay_error_message};
 
 use super::media_transcode::{
     has_heic_extension, is_heic_file, is_video_file, transcode_and_extract_poster,
     transcode_heic_path_to_jpeg_bytes,
 };
+use super::media_upload_progress::{emit_media_upload_phase, send_upload_attempt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobDescriptor {
@@ -410,51 +408,6 @@ fn should_retry_legacy_upload(status: reqwest::StatusCode) -> bool {
     )
 }
 
-async fn send_upload_attempt(
-    state: &AppState,
-    url: String,
-    auth_header: &str,
-    mime: &str,
-    sha256: &str,
-    body: bytes::Bytes,
-    progress: Option<&(tauri::AppHandle, String)>,
-) -> Result<reqwest::Response, String> {
-    let req = state
-        .http_client
-        .put(url)
-        .header("Authorization", auth_header)
-        .header("Content-Type", mime)
-        .header("X-SHA-256", sha256);
-
-    let response = if let Some((app, progress_id)) = progress {
-        use tauri::Emitter;
-        let app = app.clone();
-        let progress_id = progress_id.clone();
-        let total = body.len() as u64;
-        let chunk_size = 64 * 1024;
-        let chunk_count = body.len().div_ceil(chunk_size);
-        let mut sent: u64 = 0;
-        let stream = futures_util::stream::iter((0..chunk_count).map(move |i| {
-            let start = i * chunk_size;
-            let end = usize::min(start + chunk_size, body.len());
-            let chunk = body.slice(start..end);
-            sent += chunk.len() as u64;
-            let _ = app.emit(
-                "media-upload-progress",
-                serde_json::json!({ "id": progress_id, "sent": sent, "total": total }),
-            );
-            Ok::<bytes::Bytes, std::io::Error>(chunk)
-        }));
-        req.header(reqwest::header::CONTENT_LENGTH, total)
-            .body(reqwest::Body::wrap_stream(stream))
-            .send()
-            .await
-    } else {
-        req.body(body).send().await
-    };
-    response.map_err(|error| classify_request_error(&error))
-}
-
 pub(crate) async fn upload_image_bytes(
     body: Vec<u8>,
     state: &AppState,
@@ -494,6 +447,9 @@ async fn do_upload(
         URL_SAFE_NO_PAD.encode(auth_event.as_json().as_bytes())
     );
     let body = bytes::Bytes::from(body);
+    if let Some((app, progress_id)) = progress.as_ref() {
+        emit_media_upload_phase(app, Some(progress_id.as_str()), "uploading");
+    }
     let mut resp = send_upload_attempt(
         state,
         format!("{base_url}/upload"),
@@ -752,7 +708,10 @@ pub(super) async fn upload_media_bytes_inner(
         return Err("empty upload".to_string());
     }
 
+    emit_media_upload_phase(&app, progress_id.as_deref(), "preparing");
+
     let (body, poster_bytes) = if is_video_file(&data) {
+        emit_media_upload_phase(&app, progress_id.as_deref(), "processing-video");
         // Video: write to temp → transcode + extract poster → read results.
         // All blocking I/O runs off the async runtime via spawn_blocking.
         tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
@@ -770,6 +729,7 @@ pub(super) async fn upload_media_bytes_inner(
         .await
         .map_err(|e| format!("transcode task failed: {e}"))??
     } else if is_heic_file(&data) {
+        emit_media_upload_phase(&app, progress_id.as_deref(), "converting-image");
         // HEIC/HEIF still pasted/dropped: no filename here, so detection is
         // magic-bytes only. ffmpeg needs a path, so write to temp, transcode
         // to JPEG, and clean up. (Mirrors mobile's pre-upload transcode.)
@@ -795,9 +755,10 @@ pub(super) async fn upload_media_bytes_inner(
     let body = sanitize_image_for_upload(body, &mime)?;
 
     // Upload video first, then poster (best-effort).
-    let progress = progress_id.map(|id| (app, id));
+    let progress = progress_id.as_ref().map(|id| (app.clone(), id.clone()));
     let mut descriptor = do_upload(body, &mime, &state, progress).await?;
 
+    emit_media_upload_phase(&app, progress_id.as_deref(), "finishing");
     if let Some(poster) = poster_bytes {
         match do_upload(poster, "image/jpeg", &state, None).await {
             Ok(poster_desc) => descriptor.image = Some(poster_desc.url),

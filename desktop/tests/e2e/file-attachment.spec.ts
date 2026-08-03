@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 import { expectCornerRadiusPx, expectSmoothCorners } from "../helpers/css";
 
@@ -135,7 +136,7 @@ test("shows upload feedback before transferring a large file", async ({
         __BUZZ_E2E__?: { mock?: { uploadDelayMs?: number } };
       }
     ).__BUZZ_E2E__;
-    if (e2e?.mock) e2e.mock.uploadDelayMs = 1_000;
+    if (e2e?.mock) e2e.mock.uploadDelayMs = 5_000;
   });
   await page.getByTestId("channel-general").click();
   await chooseLargeVideo(page);
@@ -145,6 +146,7 @@ test("shows upload feedback before transferring a large file", async ({
     page.getByTestId("send-message").click(),
     expect(progress).toBeVisible({ timeout: 800 }),
   ]);
+  await expect(progress).toHaveAttribute("aria-label", "Preparing 0%");
   await expect
     .poll(() =>
       page.evaluate(
@@ -163,6 +165,41 @@ test("shows upload feedback before transferring a large file", async ({
       command: "upload_media_bytes_raw",
       payload: { rawByteLength: 16 * 1024 * 1024 },
     });
+
+  const uploadId = "background-media-upload-0-0";
+  await page.evaluate(async (id) => {
+    await window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__?.({
+      id,
+      phase: "processing-video",
+    });
+  }, uploadId);
+  await expect(progress).toHaveAttribute("aria-label", "Processing video 0%");
+  await waitForAnimations(page);
+  const processingPercentageBox = await page
+    .getByTestId("composer-upload-percentage")
+    .boundingBox();
+
+  await page.evaluate(async (id) => {
+    await window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__?.({
+      id,
+      phase: "uploading",
+    });
+    await window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PROGRESS__?.({
+      id,
+      sent: 42,
+      total: 100,
+    });
+  }, uploadId);
+  await expect(progress).toHaveAttribute("aria-label", "Uploading 42%");
+  await waitForAnimations(page);
+  const uploadingPercentageBox = await page
+    .getByTestId("composer-upload-percentage")
+    .boundingBox();
+  expect(processingPercentageBox).not.toBeNull();
+  expect(uploadingPercentageBox).not.toBeNull();
+  expect(uploadingPercentageBox?.x ?? 0).toBeLessThan(
+    processingPercentageBox?.x ?? 0,
+  );
 
   await page.getByTestId("composer-upload-cancel").click();
 });

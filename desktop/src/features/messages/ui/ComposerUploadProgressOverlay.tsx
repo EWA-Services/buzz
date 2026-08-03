@@ -12,6 +12,7 @@ export function ComposerUploadProgressOverlay() {
       <ComposerUploadProgressPill
         isUploading={backgroundUpload.isUploading}
         onCancel={cancelBackgroundMediaUploads}
+        phase={backgroundUpload.phase}
         percentage={backgroundUpload.percentage}
       />
     </div>

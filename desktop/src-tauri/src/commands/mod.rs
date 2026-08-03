@@ -31,6 +31,7 @@ mod media_gif;
 mod media_raw;
 mod media_snapshot_png;
 mod media_transcode;
+mod media_upload_progress;
 #[cfg(feature = "mesh-llm")]
 pub(crate) mod mesh_llm;
 mod messages;

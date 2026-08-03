@@ -1,17 +1,27 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
+import {
+  type BackgroundMediaUploadPhase,
+  backgroundMediaUploadPhaseLabel,
+} from "@/features/messages/lib/backgroundMediaUploadPhase";
 import { cn } from "@/shared/lib/cn";
 
 export function ComposerUploadProgressPill({
   isUploading,
   onCancel,
+  phase,
   percentage,
 }: {
   isUploading: boolean;
   onCancel: () => void;
+  phase: BackgroundMediaUploadPhase;
   percentage: number;
 }) {
   const reducedMotion = useReducedMotion();
+  const phaseLabel = backgroundMediaUploadPhaseLabel(phase);
+  const phaseTransition = reducedMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.77, 0, 0.175, 1] as const };
 
   return (
     <AnimatePresence initial={false}>
@@ -40,7 +50,7 @@ export function ComposerUploadProgressPill({
           }}
         >
           <div
-            aria-label={`Uploading ${percentage}%`}
+            aria-label={`${phaseLabel} ${percentage}%`}
             aria-live="polite"
             className="relative h-9 w-[18.75rem] max-w-full overflow-hidden rounded-full border border-primary bg-primary text-primary-foreground"
             data-testid="composer-upload-progress"
@@ -59,10 +69,35 @@ export function ComposerUploadProgressPill({
             />
             <div className="relative flex h-full items-center gap-2 pl-3 pr-1">
               <span className="min-w-0 flex-1 truncate text-sm font-semibold text-primary-foreground">
-                Uploading
-                <span className="text-primary-foreground/80">
-                  {" · "}
-                  {percentage}%
+                <span className="inline-flex items-baseline">
+                  <AnimatePresence initial={false} mode="popLayout">
+                    <motion.span
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{
+                        opacity: reducedMotion ? 1 : 0,
+                        y: reducedMotion ? 0 : -2,
+                      }}
+                      initial={{
+                        opacity: reducedMotion ? 1 : 0,
+                        y: reducedMotion ? 0 : 2,
+                      }}
+                      data-testid="composer-upload-phase"
+                      key={phase}
+                      layout="position"
+                      transition={phaseTransition}
+                    >
+                      {phaseLabel}
+                    </motion.span>
+                  </AnimatePresence>
+                  <motion.span
+                    className="text-primary-foreground/80"
+                    data-testid="composer-upload-percentage"
+                    layout="position"
+                    transition={phaseTransition}
+                  >
+                    {" · "}
+                    {percentage}%
+                  </motion.span>
                 </span>
               </span>
               <button
