@@ -10,6 +10,7 @@ export function ComposerUploadProgressOverlay() {
   return (
     <div className="pointer-events-auto">
       <ComposerUploadProgressPill
+        canCancel={backgroundUpload.canCancel}
         isUploading={backgroundUpload.isUploading}
         onCancel={cancelBackgroundMediaUploads}
         phase={backgroundUpload.phase}

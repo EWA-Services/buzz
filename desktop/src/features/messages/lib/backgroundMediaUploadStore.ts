@@ -20,10 +20,12 @@ type BackgroundUploadTask = {
   filePhases: BackgroundMediaUploadPhase[];
   fileProgress: Array<{ sent: number; total: number }>;
   id: number;
+  isCompleting: boolean;
   onCancel?: () => void;
 };
 
 type BackgroundUploadSnapshot = {
+  canCancel: boolean;
   isUploading: boolean;
   phase: BackgroundMediaUploadPhase;
   percentage: number;
@@ -50,6 +52,7 @@ const tasks = new Map<number, BackgroundUploadTask>();
 const listeners = new Set<() => void>();
 let nextTaskId = 0;
 let snapshot: BackgroundUploadSnapshot = {
+  canCancel: false,
   isUploading: false,
   phase: "preparing",
   percentage: 0,
@@ -73,6 +76,7 @@ function rebuildSnapshot(): void {
     0,
   );
   snapshot = {
+    canCancel: allTasks.some((task) => !task.isCompleting),
     isUploading: allTasks.length > 0,
     phase: resolveBackgroundMediaUploadPhase(
       allTasks.flatMap((task) => task.filePhases),
@@ -164,7 +168,7 @@ function finishTask(taskId: number): void {
 }
 
 function cancelTask(task: BackgroundUploadTask): void {
-  if (task.canceled) return;
+  if (task.canceled || task.isCompleting) return;
   task.canceled = true;
   task.onCancel?.();
   for (let index = 0; index < task.fileProgress.length; index += 1) {
@@ -213,6 +217,7 @@ export function prepareBackgroundMediaUpload(
       total: attachment.file.size,
     })),
     id: taskId,
+    isCompleting: false,
   };
   let started = false;
   tasks.set(taskId, task);
@@ -252,6 +257,7 @@ export function prepareBackgroundMediaUpload(
           }
 
           if (!task.canceled) {
+            task.isCompleting = true;
             task.filePhases.fill("finishing");
             rebuildSnapshot();
             await onComplete(descriptors);

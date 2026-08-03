@@ -1,5 +1,4 @@
 import * as React from "react";
-
 import { EditorContent } from "@tiptap/react";
 import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
 import { handleAgentSnapshotPaste } from "@/features/messages/lib/agentSnapshotClipboard";
@@ -886,6 +885,7 @@ function MessageComposerImpl({
           />
           {showBackgroundUploadProgress ? (
             <ComposerUploadProgressPill
+              canCancel={backgroundUpload.canCancel}
               isUploading={backgroundUpload.isUploading}
               onCancel={cancelBackgroundMediaUploads}
               phase={backgroundUpload.phase}

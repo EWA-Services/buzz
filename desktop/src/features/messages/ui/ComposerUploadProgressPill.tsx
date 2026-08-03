@@ -8,11 +8,13 @@ import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
 
 export function ComposerUploadProgressPill({
+  canCancel,
   isUploading,
   onCancel,
   phase,
   percentage,
 }: {
+  canCancel: boolean;
   isUploading: boolean;
   onCancel: () => void;
   phase: BackgroundMediaUploadPhase;
@@ -147,17 +149,19 @@ export function ComposerUploadProgressPill({
                   </motion.span>
                 </span>
               </span>
-              <button
-                className={cn(
-                  "shrink-0 rounded-full bg-transparent px-2 py-1 text-sm font-semibold text-primary-foreground",
-                  "transition-colors hover:bg-primary-foreground/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary-foreground",
-                )}
-                data-testid="composer-upload-cancel"
-                onClick={onCancel}
-                type="button"
-              >
-                Cancel
-              </button>
+              {canCancel ? (
+                <button
+                  className={cn(
+                    "shrink-0 rounded-full bg-transparent px-2 py-1 text-sm font-semibold text-primary-foreground",
+                    "transition-colors hover:bg-primary-foreground/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary-foreground",
+                  )}
+                  data-testid="composer-upload-cancel"
+                  onClick={onCancel}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              ) : null}
             </div>
           </div>
         </motion.div>
