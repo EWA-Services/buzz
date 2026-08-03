@@ -43,6 +43,7 @@ import 'photo_library.dart';
 part 'compose_bar/helpers.dart';
 part 'compose_bar/agent_mention_labels.dart';
 part 'compose_bar/markdown_editing_controller.dart';
+part 'compose_bar/draft_lifecycle.dart';
 part 'compose_bar/suggestions.dart';
 part 'compose_bar/formatting_toolbar.dart';
 part 'compose_bar/attachments.dart';

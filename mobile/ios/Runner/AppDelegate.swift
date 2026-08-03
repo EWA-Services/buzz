@@ -304,17 +304,30 @@ import UserNotifications
     }
 
     do {
-      try destinationVideo.insertTimeRange(sourceVideo.timeRange, of: sourceVideo, at: .zero)
+      let sourceAudio = asset.tracks(withMediaType: .audio).first
+      let insertionTimes = Self.relativeTrackInsertionTimes(
+        videoStart: sourceVideo.timeRange.start,
+        audioStart: sourceAudio?.timeRange.start
+      )
+      try destinationVideo.insertTimeRange(
+        sourceVideo.timeRange,
+        of: sourceVideo,
+        at: insertionTimes.video
+      )
       destinationVideo.preferredTransform = sourceVideo.preferredTransform
 
       if
-        let sourceAudio = asset.tracks(withMediaType: .audio).first,
+        let sourceAudio,
         let destinationAudio = composition.addMutableTrack(
           withMediaType: .audio,
           preferredTrackID: kCMPersistentTrackID_Invalid
         )
       {
-        try destinationAudio.insertTimeRange(sourceAudio.timeRange, of: sourceAudio, at: .zero)
+        try destinationAudio.insertTimeRange(
+          sourceAudio.timeRange,
+          of: sourceAudio,
+          at: insertionTimes.audio ?? .zero
+        )
       }
     } catch {
       result(
@@ -394,6 +407,22 @@ import UserNotifications
         try? FileManager.default.removeItem(at: outputURL)
       }
     }
+  }
+
+  static func relativeTrackInsertionTimes(
+    videoStart: CMTime,
+    audioStart: CMTime?
+  ) -> (video: CMTime, audio: CMTime?) {
+    guard let audioStart else {
+      return (video: .zero, audio: nil)
+    }
+
+    let timelineStart =
+      CMTimeCompare(audioStart, videoStart) < 0 ? audioStart : videoStart
+    return (
+      video: CMTimeSubtract(videoStart, timelineStart),
+      audio: CMTimeSubtract(audioStart, timelineStart)
+    )
   }
 
   private func generateVideoPoster(

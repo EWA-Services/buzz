@@ -548,7 +548,13 @@ void main() {
 
       await tester.pumpWidget(
         _buildComposeBar(
-          uploadService: _testUploadService(keysA.nsec),
+          uploadService: MediaUploadService(
+            baseUrl: relayUrl,
+            nsec: keysA.nsec,
+            pickGalleryImage: () async =>
+                XFile.fromData(_pngBytes, name: 'identity-a.png'),
+            pickGalleryVideo: () async => null,
+          ),
           relayConfig: () => _SwitchableRelayConfigNotifier(
             RelayConfig(baseUrl: relayUrl, nsec: keysA.nsec),
           ),
@@ -576,6 +582,9 @@ void main() {
       await tester.enterText(find.byType(TextField), 'identity A secret draft');
       await tester.pump();
       expect(storedText(keysA), 'identity A secret draft');
+      await _openSystemPhotoPicker(tester);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Remove attachment'), findsOneWidget);
 
       // Switch identity in place while the composer stays mounted.
       final container = ProviderScope.containerOf(
@@ -587,9 +596,15 @@ void main() {
       await tester.pumpAndSettle();
 
       // The mounted composer must not carry identity A's text forward.
+      await _expandComposer(tester);
       final textField = tester.widget<TextField>(find.byType(TextField));
       expect(textField.controller!.text, isEmpty);
       expect(storedText(keysB), isNull);
+      expect(find.byTooltip('Remove attachment'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('compose-upload-progress')),
+        findsNothing,
+      );
 
       // Identity B's edits persist only into B's store; A's is untouched.
       await tester.enterText(find.byType(TextField), 'identity B text');

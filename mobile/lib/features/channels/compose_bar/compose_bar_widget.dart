@@ -47,33 +47,6 @@ class ComposeBar extends HookConsumerWidget {
     final draftIdentity =
         '${ref.watch(relayConfigProvider).baseUrl}'
         ':${ref.watch(myPubkeyProvider) ?? 'anon'}';
-    final lastDraftIdentity = useRef<String?>(null);
-    useEffect(() {
-      final identityChanged =
-          lastDraftIdentity.value != null &&
-          lastDraftIdentity.value != draftIdentity;
-      lastDraftIdentity.value = draftIdentity;
-      final saved = ref.read(composeDraftsProvider.notifier).textFor(draftKey);
-      if (identityChanged) {
-        controller.text = saved ?? '';
-      } else if (saved != null && controller.text.isEmpty) {
-        controller.text = saved;
-      }
-      void persistDraft() {
-        draftRevision.value += 1;
-        ref
-            .read(composeDraftsProvider.notifier)
-            .save(
-              key: draftKey,
-              channelId: channelId,
-              threadHeadId: threadHeadId,
-              text: controller.text,
-            );
-      }
-
-      controller.addListener(persistDraft);
-      return () => controller.removeListener(persistDraft);
-    }, [controller, draftKey, draftIdentity]);
     final focusNode = useFocusNode();
     useEffect(
       () =>
@@ -100,6 +73,23 @@ class ComposeBar extends HookConsumerWidget {
     final uploadProgress = useState(0.0);
     final uploadGeneration = useRef(0);
     final activeUploadCancellation = useRef<UploadCancellationToken?>(null);
+    _useComposeDraftLifecycle(
+      ref: ref,
+      controller: controller,
+      draftKey: draftKey,
+      channelId: channelId,
+      threadHeadId: threadHeadId,
+      draftIdentity: draftIdentity,
+      draftRevision: draftRevision,
+      attachments: attachments,
+      uploadGeneration: uploadGeneration,
+      activeUploadCancellation: activeUploadCancellation,
+      uploadingCount: uploadingCount,
+      isSending: isSending,
+      attachmentSurface: attachmentSurface,
+      uploadError: uploadError,
+      iosAttachmentPopover: iosAttachmentPopover,
+    );
     final clipboardHasImage = useState(false);
     final hasAttachments = attachments.value.isNotEmpty;
     final customEmoji = ref.watch(customEmojiListProvider);

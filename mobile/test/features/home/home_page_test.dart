@@ -1,5 +1,4 @@
 import 'package:buzz/features/home/home_page.dart';
-import 'package:buzz/shared/read_state/inbox_unread_provider.dart';
 import 'package:buzz/features/channels/channels_page.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:flutter/material.dart';
@@ -16,10 +15,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     return ProviderScope(
-      overrides: [
-        savedPrefsProvider.overrideWithValue(prefs),
-        unreadInboxItemCountProvider.overrideWith((_) => unreadInboxCount),
-      ],
+      overrides: [savedPrefsProvider.overrideWithValue(prefs)],
       child: MaterialApp(
         theme: AppTheme.light(),
         builder: (context, child) => MediaQuery(
@@ -28,7 +24,10 @@ void main() {
           ).copyWith(disableAnimations: disableAnimations),
           child: child!,
         ),
-        home: const HomePage(settingsPageBuilder: _buildSettingsPage),
+        home: HomePage(
+          settingsPageBuilder: _buildSettingsPage,
+          hasUnreadInbox: unreadInboxCount > 0,
+        ),
       ),
     );
   }
