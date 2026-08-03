@@ -94,6 +94,7 @@ class ComposeBar extends HookConsumerWidget {
     final isSending = useState(false);
     final showFormatting = useState(false);
     final attachments = useState<List<_PendingAttachment>>([]);
+    _useOwnedAttachmentCleanup(attachments);
     final uploadError = useState<String?>(null);
     final uploadingCount = useState(0);
     final uploadProgress = useState(0.0);
@@ -405,8 +406,7 @@ class ComposeBar extends HookConsumerWidget {
     }
 
     void removeAttachment(int id) {
-      draftRevision.value += 1;
-      attachments.value = _withoutAttachment(attachments.value, id);
+      _removePendingAttachment(attachments, draftRevision, id);
     }
 
     // Send the message.
@@ -537,6 +537,7 @@ class ComposeBar extends HookConsumerWidget {
         activeUploadCancellation.value = cancellation;
         final delivery = onSend;
         unawaited(() async {
+          var retainedForRetry = false;
           try {
             final uploaded = <BlobDescriptor>[];
             for (var index = 0; index < queuedAttachments.length; index++) {
@@ -577,12 +578,16 @@ class ComposeBar extends HookConsumerWidget {
                 draftRevision.value == clearedDraftRevision) {
               controller.value = draftText;
               attachments.value = draftAttachments;
+              retainedForRetry = true;
               mentionMap.value
                 ..clear()
                 ..addAll(draftMentions);
               focusNode.requestFocus();
             }
           } finally {
+            if (!retainedForRetry) {
+              await _deleteOwnedAttachments(queuedAttachments);
+            }
             if (activeUploadCancellation.value == cancellation) {
               activeUploadCancellation.value = null;
             }
@@ -596,12 +601,20 @@ class ComposeBar extends HookConsumerWidget {
       }
     }
 
-    void queueAttachment(XFile file, _PendingAttachmentKind kind) {
+    void queueAttachment(
+      XFile file,
+      _PendingAttachmentKind kind, {
+      bool deleteAfterUse = false,
+    }) {
       draftRevision.value += 1;
       uploadError.value = null;
       attachments.value = [
         ...attachments.value,
-        _PendingAttachment(file: file, kind: kind),
+        _PendingAttachment(
+          file: file,
+          kind: kind,
+          deleteAfterUse: deleteAfterUse,
+        ),
       ];
     }
 
@@ -621,16 +634,23 @@ class ComposeBar extends HookConsumerWidget {
       }
     }
 
-    void queueImages(List<XFile> images) {
+    void queueImages(List<XFile> images, {bool deleteAfterUse = false}) {
       if (images.isEmpty) return;
       draftRevision.value += 1;
       uploadError.value = null;
       attachments.value = [
         ...attachments.value,
         for (final image in images)
-          _PendingAttachment(file: image, kind: _PendingAttachmentKind.image),
+          _PendingAttachment(
+            file: image,
+            kind: _PendingAttachmentKind.image,
+            deleteAfterUse: deleteAfterUse,
+          ),
       ];
     }
+
+    Future<void> retainAndQueueImages(List<XFile> images) =>
+        _retainAndQueueImages(context, images, queueImages);
 
     Widget buildContextMenu(
       BuildContext context,
@@ -766,9 +786,8 @@ class ComposeBar extends HookConsumerWidget {
         iosAttachmentPopover
             .present(
               sourceContext: triggerContext,
-              onCapture: (image) async =>
-                  queueAttachment(image, _PendingAttachmentKind.image),
-              onChoosePhotos: (photos) async => queueImages(photos),
+              onCapture: (image) => retainAndQueueImages([image]),
+              onChoosePhotos: retainAndQueueImages,
               onAllPhotos: () => chooseAttachment(() async {
                 final photos = await ref
                     .read(mediaUploadServiceProvider)
@@ -884,10 +903,14 @@ class ComposeBar extends HookConsumerWidget {
         }),
         onCapture: (image) async {
           attachmentSurface.value = _AttachmentSurface.closed;
-          queueAttachment(image, _PendingAttachmentKind.image);
+          await retainAndQueueImages([image]);
         },
         onPickAllPhotos: ref.read(mediaUploadServiceProvider).pickGalleryImages,
         onChoosePhotos: (photos) async {
+          attachmentSurface.value = _AttachmentSurface.closed;
+          await retainAndQueueImages(photos);
+        },
+        onChooseAllPhotos: (photos) async {
           attachmentSurface.value = _AttachmentSurface.closed;
           queueImages(photos);
         },

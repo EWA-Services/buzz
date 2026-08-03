@@ -60,6 +60,7 @@ class _AttachmentSurfacePanel extends HookWidget {
   final Future<void> Function(XFile image) onCapture;
   final Future<List<XFile>> Function() onPickAllPhotos;
   final Future<void> Function(List<XFile> photos) onChoosePhotos;
+  final Future<void> Function(List<XFile> photos) onChooseAllPhotos;
 
   const _AttachmentSurfacePanel({
     super.key,
@@ -73,6 +74,7 @@ class _AttachmentSurfacePanel extends HookWidget {
     required this.onCapture,
     required this.onPickAllPhotos,
     required this.onChoosePhotos,
+    required this.onChooseAllPhotos,
   });
 
   @override
@@ -150,6 +152,7 @@ class _AttachmentSurfacePanel extends HookWidget {
           onBack: onBack,
           onPickAllPhotos: onPickAllPhotos,
           onChoosePhotos: onChoosePhotos,
+          onChooseAllPhotos: onChooseAllPhotos,
         ),
       ),
       _AttachmentSurface.closed ||
@@ -275,8 +278,67 @@ class _PendingAttachment {
   final int id;
   final XFile file;
   final _PendingAttachmentKind kind;
+  final bool deleteAfterUse;
 
-  _PendingAttachment({required this.file, required this.kind}) : id = _nextId++;
+  _PendingAttachment({
+    required this.file,
+    required this.kind,
+    this.deleteAfterUse = false,
+  }) : id = _nextId++;
+}
+
+Future<void> _deleteXFile(XFile file) async {
+  final path = file.path;
+  if (path.isEmpty) return;
+  try {
+    await File(path).delete();
+  } on FileSystemException {
+    // Temporary files may already have been removed by the operating system.
+  }
+}
+
+Future<void> _deleteOwnedAttachments(
+  Iterable<_PendingAttachment> attachments,
+) async {
+  for (final attachment in attachments) {
+    if (attachment.deleteAfterUse) await _deleteXFile(attachment.file);
+  }
+}
+
+void _useOwnedAttachmentCleanup(
+  ValueNotifier<List<_PendingAttachment>> attachments,
+) {
+  useEffect(
+    () =>
+        () => unawaited(_deleteOwnedAttachments(attachments.value)),
+    [attachments],
+  );
+}
+
+void _removePendingAttachment(
+  ValueNotifier<List<_PendingAttachment>> attachments,
+  ObjectRef<int> draftRevision,
+  int id,
+) {
+  draftRevision.value += 1;
+  final removed = attachments.value.where((attachment) => attachment.id == id);
+  attachments.value = _withoutAttachment(attachments.value, id);
+  unawaited(_deleteOwnedAttachments(removed));
+}
+
+Future<void> _retainAndQueueImages(
+  BuildContext context,
+  List<XFile> images,
+  void Function(List<XFile>, {bool deleteAfterUse}) queueImages,
+) async {
+  final retained = await retainTemporaryImages(images);
+  if (!context.mounted) {
+    for (final image in retained) {
+      await _deleteXFile(image);
+    }
+    return;
+  }
+  queueImages(retained, deleteAfterUse: true);
 }
 
 Future<BlobDescriptor> _uploadPendingAttachment(
