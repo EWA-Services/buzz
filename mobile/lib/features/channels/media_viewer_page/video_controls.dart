@@ -40,13 +40,13 @@ class _VideoViewerBottomControls extends StatelessWidget {
   }
 }
 
-class _VideoTransportBar extends HookWidget {
+class _VideoTransportBar extends HookConsumerWidget {
   final VideoPlayerController controller;
 
   const _VideoTransportBar({required this.controller});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     useListenable(controller);
     final value = controller.value;
     final durationMs = value.duration.inMilliseconds;

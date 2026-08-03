@@ -58,7 +58,7 @@ class _UploadProgressMotion extends StatelessWidget {
 
 /// A lightweight post-send upload status that stays above the composer, so the
 /// composer is immediately available for the next message.
-class _UploadProgressPill extends HookWidget {
+class _UploadProgressPill extends HookConsumerWidget {
   final double progress;
   final bool reducedMotion;
   final VoidCallback onCancel;
@@ -70,7 +70,7 @@ class _UploadProgressPill extends HookWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final cancelHovered = useState(false);
     final clampedProgress = progress.clamp(0.0, 1.0).toDouble();
     final percentage = (clampedProgress * 100).round();

@@ -271,6 +271,43 @@ void main() {
     },
   );
 
+  test('serializes manual and live inbox refreshes', () async {
+    final session = _RecordingSessionNotifier();
+    final container = ProviderContainer(
+      overrides: [
+        relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+        myPubkeyProvider.overrideWithValue('me_pk'),
+        relaySessionProvider.overrideWith(() => session),
+        channelsProvider.overrideWith(
+          () => _FixedChannelsNotifier(const <Channel>[]),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(channelsProvider.future);
+    await container.read(activityProvider.future);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    session.mentionFetchGate = Completer<void>();
+    final manualRefresh = container.read(activityProvider.notifier).refresh();
+    await _waitFor(() => session.activeMentionFetches == 1);
+
+    session.emit(_mentionEvent('live-during-manual', 1_700_000_003));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(session.maxActiveMentionFetches, 1);
+
+    session.mentionFetchGate!.complete();
+    await manualRefresh;
+    await _waitFor(() => session.mentionFetchCount >= 3);
+    await _waitFor(
+      () =>
+          container.read(inboxItemsProvider).single.id == 'live-during-manual',
+    );
+
+    expect(session.maxActiveMentionFetches, 1);
+  });
+
   test('retains the loaded inbox when a live refresh fails', () async {
     final session = _RecordingSessionNotifier()
       ..seed(_mentionEvent('existing', 1_700_000_001));

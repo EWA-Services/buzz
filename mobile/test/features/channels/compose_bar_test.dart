@@ -1936,6 +1936,51 @@ void main() {
     );
 
     testWidgets(
+      'stale channel actions cannot invite after a community switch',
+      (tester) async {
+        final signer = nostr.Keys.generate();
+        final publishedEvents = <Map<String, dynamic>>[];
+        await tester.pumpWidget(
+          _buildComposeBar(
+            uploadService: _testUploadService(signer.nsec),
+            currentPubkey: signer.public,
+            relayConfig: () => _SwitchableRelayConfigNotifier(
+              RelayConfig(baseUrl: 'https://relay.example', nsec: signer.nsec),
+            ),
+            onSend: (_, _, {mediaTags = const <List<String>>[]}) async {},
+          ),
+        );
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(ComposeBar)),
+        );
+        final session = container.read(relaySessionProvider.notifier);
+        session.debugAttachSocketForTest(
+          _RecordingRelaySocket(
+            publishedEvents,
+            session.debugHandleSocketMessageForTest,
+          ),
+        );
+        final staleActions = container.read(channelActionsProvider);
+
+        container
+            .read(relayConfigProvider.notifier)
+            .update(baseUrl: 'https://other-community.example', nsec: null);
+        await tester.pump();
+
+        await expectLater(
+          staleActions.addMembers(
+            channelId: 'channel-1',
+            pubkeys: ['c' * 64],
+            role: 'bot',
+          ),
+          throwsA(isA<StateError>()),
+        );
+        expect(publishedEvents, isEmpty);
+      },
+    );
+
+    testWidgets(
       'does not add a mentioned non-member when media upload is cancelled',
       (tester) async {
         final agentPubkey = 'c' * 64;

@@ -39,8 +39,9 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void Function()? _unsubscribeAddressed;
   void Function()? _unsubscribeDms;
   Timer? _liveRefreshTimer;
-  int? _liveRefreshGeneration;
-  bool _liveRefreshQueued = false;
+  Future<void>? _refreshInFlight;
+  int? _refreshGeneration;
+  bool _refreshQueued = false;
   int _subscriptionGeneration = 0;
 
   @override
@@ -124,21 +125,28 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = Timer(
       const Duration(milliseconds: 50),
-      () => unawaited(_runLiveRefresh(generation)),
+      () => unawaited(_queueRefresh(generation)),
     );
   }
 
-  Future<void> _runLiveRefresh(int generation) async {
-    if (generation != _subscriptionGeneration) return;
-    if (_liveRefreshGeneration == generation) {
-      _liveRefreshQueued = true;
-      return;
+  Future<void> _queueRefresh(int generation) {
+    if (generation != _subscriptionGeneration) return Future.value();
+    _refreshQueued = true;
+    final inFlight = _refreshInFlight;
+    if (_refreshGeneration == generation && inFlight != null) {
+      return inFlight;
     }
 
-    _liveRefreshGeneration = generation;
+    _refreshGeneration = generation;
+    final future = _drainRefreshQueue(generation);
+    _refreshInFlight = future;
+    return future;
+  }
+
+  Future<void> _drainRefreshQueue(int generation) async {
     try {
       do {
-        _liveRefreshQueued = false;
+        _refreshQueued = false;
         try {
           final next = await _fetch();
           if (generation != _subscriptionGeneration) return;
@@ -146,14 +154,15 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
         } catch (error) {
           if (generation != _subscriptionGeneration) return;
           debugPrint(
-            '[ActivityNotifier] live refresh failed; retaining feed: $error',
+            '[ActivityNotifier] inbox refresh failed; retaining feed: $error',
           );
         }
-      } while (_liveRefreshQueued && generation == _subscriptionGeneration);
+      } while (_refreshQueued && generation == _subscriptionGeneration);
     } finally {
-      if (_liveRefreshGeneration == generation) {
-        _liveRefreshGeneration = null;
-        _liveRefreshQueued = false;
+      if (_refreshGeneration == generation) {
+        _refreshInFlight = null;
+        _refreshGeneration = null;
+        _refreshQueued = false;
       }
     }
   }
@@ -161,8 +170,9 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void _clearLiveSubscriptions() {
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = null;
-    _liveRefreshGeneration = null;
-    _liveRefreshQueued = false;
+    _refreshInFlight = null;
+    _refreshGeneration = null;
+    _refreshQueued = false;
     _unsubscribeAddressed?.call();
     _unsubscribeAddressed = null;
     _unsubscribeDms?.call();
@@ -304,7 +314,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   }
 
   Future<void> refresh() async {
-    state = await AsyncValue.guard(_fetch);
+    await _queueRefresh(_subscriptionGeneration);
   }
 }
 

@@ -681,13 +681,13 @@ class _AttachmentStrip extends StatelessWidget {
   }
 }
 
-class _MemoryAttachmentImage extends HookWidget {
+class _MemoryAttachmentImage extends HookConsumerWidget {
   final XFile file;
 
   const _MemoryAttachmentImage({required this.file});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final bytes = useFuture(useMemoized(() => file.readAsBytes(), [file]));
     final data = bytes.data;
 
