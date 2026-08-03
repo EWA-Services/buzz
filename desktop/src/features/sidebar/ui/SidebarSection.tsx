@@ -295,15 +295,18 @@ export function ChannelMenuButton({
         "data-[active=true]:font-normal",
         isActive
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
-          : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-accent-foreground",
+          : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground",
+        hasTopLevelUnread &&
+          "font-bold text-sidebar-foreground hover:text-sidebar-foreground data-[active=true]:font-bold",
         !isActive &&
-          hasTopLevelUnread &&
-          "font-bold text-sidebar-foreground hover:text-sidebar-foreground",
+          !hasTopLevelUnread &&
+          !isMuted &&
+          "dark:opacity-75 dark:hover:opacity-100",
         !isActive &&
           isMuted &&
           !hasTopLevelUnread &&
           !hasThreadUnread &&
-          "opacity-50",
+          "opacity-50 dark:opacity-45",
       )}
       data-channel-id={channel.id}
       data-testid={`channel-${channel.name}`}

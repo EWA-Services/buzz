@@ -85,6 +85,22 @@ test.describe("channel muting", () => {
     await expect(engRow.locator("svg.lucide-bell-off")).toHaveCount(1);
   });
 
+  test("02b — muted channels recede further in dark mode", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("buzz-theme", "buzz-dark");
+    });
+    await seedMuteState(page, ENGINEERING_CHANNEL_ID);
+    await installMockBridge(page);
+
+    await page.goto("/");
+    await page.getByTestId("channel-random").click();
+
+    await expect(page.getByTestId("channel-engineering")).toHaveCSS(
+      "opacity",
+      "0.45",
+    );
+  });
+
   test("03 — muted channel with a top-level @mention is emphasized", async ({
     page,
   }) => {

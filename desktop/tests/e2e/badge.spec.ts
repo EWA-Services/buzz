@@ -105,6 +105,89 @@ test("selected Inbox and Agents rows keep their highlight without bold text", as
   await expect(agents).toHaveCSS("font-weight", "400");
 });
 
+test("hovering a channel keeps its text color", async ({ page }) => {
+  await page.goto("/");
+  const channel = page.getByTestId("channel-engineering");
+  const initialColor = await channel.evaluate(
+    (element) => getComputedStyle(element).color,
+  );
+
+  await channel.hover();
+  await expect(channel).toHaveCSS("color", initialColor);
+});
+
+test("direct-message rows become prominent only when unread", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "buzz-dark");
+  });
+  await page.goto("/");
+  const directMessage = page.getByTestId("channel-alice-tyler");
+
+  await directMessage.click();
+  await waitForMockLiveSubscription(page, "alice-tyler");
+  await page.getByTestId("channel-general").click();
+
+  await expect(directMessage).toHaveCSS("opacity", "0.75");
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "alice-tyler",
+      content: "An unread direct message",
+      kind: 40002,
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  await expect(directMessage).toHaveCSS("opacity", "1");
+  await expect(directMessage).toHaveCSS("font-weight", "700");
+});
+
+test("dark mode keeps selected labels regular and channel-level unread labels bold", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "buzz-dark");
+  });
+  await page.goto("/");
+
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  const inbox = page
+    .getByTestId("sidebar-primary-menu")
+    .getByRole("button", { name: "Inbox", exact: true });
+  await expect(inbox).toHaveAttribute("data-active", "true");
+  await expect(inbox).toHaveCSS("font-weight", "400");
+  await expect(page.getByTestId("open-agents-view")).toHaveCSS(
+    "opacity",
+    "0.75",
+  );
+
+  await page.getByTestId("channel-general").click();
+  await expect(inbox).toHaveCSS("opacity", "0.75");
+  await waitForMockLiveSubscription(page, "random");
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "random",
+      content: "A dark-mode channel-level unread message",
+      kind: 40002,
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  const unreadChannel = page.getByTestId("channel-random");
+  await expect(page.getByTestId("channel-engineering")).toHaveCSS(
+    "opacity",
+    "0.75",
+  );
+  await expect(unreadChannel).toHaveCSS("opacity", "1");
+  await expect(unreadChannel).toHaveCSS("font-weight", "700");
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOTS}/sidebar-dark-unread.png`,
+    clip: { x: 0, y: 0, width: 320, height: 720 },
+  });
+});
+
 test("offscreen preview activity shows the primary sidebar arrow", async ({
   page,
 }) => {
@@ -458,6 +541,16 @@ test("marking a message unread bolds its channel after leaving", async ({
   const toggle = page.getByTestId(`mark-read-toggle-${message.id}`);
   await expect(toggle).toHaveText("Mark unread");
   await toggle.click();
+
+  await expect(page.getByTestId("channel-random")).toHaveCSS(
+    "font-weight",
+    "700",
+  );
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOTS}/sidebar-active-manual-unread.png`,
+    clip: { x: 0, y: 0, width: 320, height: 720 },
+  });
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("channel-random")).toHaveCSS(
