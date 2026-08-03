@@ -15,6 +15,7 @@ import { useAddChannelMembersMutation } from "@/features/channels/hooks";
 import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/effectiveExplicitAgentPubkeys";
 import {
   prepareBackgroundMediaUpload,
+  saveQueuedAttachmentsForDraft,
   type QueuedMediaAttachment,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
@@ -518,13 +519,22 @@ export function useMentionSendFlow({
         };
         const restoreComposerAfterFailure = () => {
           persistCanceledDraft();
-          if (
-            !isMountedRef.current ||
-            (draft.capturedChannelId !== channelIdRef.current &&
-              channelIdRef.current !== null) ||
-            contentRef.current.trim().length > 0 ||
-            hasUnsavedMedia()
-          ) {
+          const canRestoreCurrentComposer =
+            isMountedRef.current &&
+            (draft.capturedChannelId === channelIdRef.current ||
+              channelIdRef.current === null) &&
+            contentRef.current.trim().length === 0 &&
+            !hasUnsavedMedia();
+          const isOffChannel =
+            draft.capturedChannelId !== channelIdRef.current &&
+            channelIdRef.current !== null;
+          if (isOffChannel && draft.sentDraftKey) {
+            saveQueuedAttachmentsForDraft(
+              draft.sentDraftKey,
+              draft.queuedAttachments,
+            );
+          }
+          if (!canRestoreCurrentComposer) {
             return;
           }
           setContent(draft.savedContent);
@@ -586,7 +596,6 @@ export function useMentionSendFlow({
             );
           }
         };
-
         if (preparedUpload) {
           uploadStarted = preparedUpload.start({
             onComplete: async (uploaded, signal) => {

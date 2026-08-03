@@ -50,6 +50,7 @@ fn optional_raw_upload_header(request: &Request<'_>, name: &str) -> Result<Optio
         .transpose()
 }
 
+/// Cancel the native upload associated with a background progress ID.
 #[tauri::command]
 pub fn cancel_media_upload(progress_id: String) {
     cancel_registered_media_upload(&progress_id);

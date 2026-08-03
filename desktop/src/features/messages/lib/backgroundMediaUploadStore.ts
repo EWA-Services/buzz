@@ -53,6 +53,7 @@ export type PreparedBackgroundMediaUpload = {
 };
 
 const tasks = new Map<number, BackgroundUploadTask>();
+const queuedAttachmentsByDraftKey = new Map<string, QueuedMediaAttachment[]>();
 const listeners = new Set<() => void>();
 let nextTaskId = 0;
 let snapshot: BackgroundUploadSnapshot = {
@@ -307,6 +308,27 @@ export function resetBackgroundMediaUploads(): void {
   for (const task of [...tasks.values()]) {
     cancelTask(task, { force: true, notify: false });
   }
+  queuedAttachmentsByDraftKey.clear();
+}
+
+/**
+ * Retain local files that cannot be serialized with a draft while a deferred
+ * upload recovers after the user has left its channel.
+ */
+export function saveQueuedAttachmentsForDraft(
+  draftKey: string,
+  attachments: QueuedMediaAttachment[],
+): void {
+  queuedAttachmentsByDraftKey.set(draftKey, attachments);
+}
+
+/** Return and remove the local files retained for a recovered draft. */
+export function takeQueuedAttachmentsForDraft(
+  draftKey: string,
+): QueuedMediaAttachment[] {
+  const attachments = queuedAttachmentsByDraftKey.get(draftKey) ?? [];
+  queuedAttachmentsByDraftKey.delete(draftKey);
+  return attachments;
 }
 
 function subscribe(listener: () => void): () => void {

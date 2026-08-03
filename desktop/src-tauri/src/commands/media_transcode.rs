@@ -252,7 +252,11 @@ fn transcode_to_mp4_with_cancellation(
             .stderr(std::process::Stdio::piped()),
         FFMPEG_TIMEOUT,
         cancellation,
-    )?;
+    )
+    .map_err(|error| {
+        let _ = std::fs::remove_file(&output);
+        error
+    })?;
 
     if !result.status.success() {
         let _ = std::fs::remove_file(&output);
@@ -315,7 +319,11 @@ fn transcode_heic_to_jpeg(
             .stderr(std::process::Stdio::piped()),
         heic_timeout,
         cancellation,
-    )?;
+    )
+    .map_err(|error| {
+        let _ = std::fs::remove_file(&output);
+        error
+    })?;
 
     if !result.status.success() {
         let _ = std::fs::remove_file(&output);

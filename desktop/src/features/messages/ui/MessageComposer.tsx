@@ -19,6 +19,7 @@ import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditi
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import {
   cancelBackgroundMediaUploads,
+  takeQueuedAttachmentsForDraft,
   useBackgroundMediaUpload,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
 import { useMentions } from "@/features/messages/lib/useMentions";
@@ -163,6 +164,8 @@ function MessageComposerImpl({
     livePendingImeta: media.pendingImeta,
     setPendingImeta: media.setPendingImeta,
     clearQueuedAttachments: media.clearQueuedAttachments,
+    restoreQueuedAttachments: media.restoreQueuedAttachments,
+    takeQueuedAttachmentsForDraft,
     setContent: (content) => {
       setComposerContent(content);
       richText.setContent(content);
@@ -478,7 +481,6 @@ function MessageComposerImpl({
       richText.focus();
       return;
     }
-
     // Insert @ at cursor
     const previousChar = text.slice(0, cursor).slice(-1);
     const prefix =
@@ -495,11 +497,9 @@ function MessageComposerImpl({
     richText.focus,
     mentions.updateMentionQuery,
   ]);
-
   // ── Submit message ──────────────────────────────────────────────────
   const submitMessage = React.useCallback(async () => {
     const trimmed = syncComposerContentFromEditor().trim();
-
     // Edit mode
     if (editTargetRef.current && onEditSaveRef.current) {
       if (isEditSubmissionLocked) return;
