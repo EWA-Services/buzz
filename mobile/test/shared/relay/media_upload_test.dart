@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -1339,6 +1340,63 @@ void main() {
         await tempFile.parent.delete(recursive: true);
       }
     });
+
+    test(
+      'stops before reading a transcode completed after cancellation',
+      () async {
+        final transcodeStarted = Completer<void>();
+        final transcodeFinished = Completer<String>();
+        final cancellationToken = UploadCancellationToken();
+        var uploadRequested = false;
+        final (xfile, sourceFile) = await writeTempVideo(
+          buildFtypHeader('qt  '),
+          'clip.mov',
+        );
+        final outputDirectory = await Directory.systemTemp.createTemp(
+          'cancelled_transcode_',
+        );
+        final outputFile = File('${outputDirectory.path}/out.mp4');
+        final outputHandle = await outputFile.open(mode: FileMode.write);
+        await outputHandle.truncate(101 * 1024 * 1024);
+        await outputHandle.close();
+
+        try {
+          final service = MediaUploadService(
+            baseUrl: 'https://relay.example',
+            nsec: nostr.Keys.generate().nsec,
+            httpClient: http_testing.MockClient((_) async {
+              uploadRequested = true;
+              return http.Response('', HttpStatus.internalServerError);
+            }),
+            pickGalleryVideo: () async => xfile,
+            pickGalleryImage: () async => null,
+            transcodeVideoToMp4: (_) {
+              transcodeStarted.complete();
+              return transcodeFinished.future;
+            },
+          );
+
+          final upload = service.uploadVideo(
+            xfile,
+            cancellationToken: cancellationToken,
+          );
+          final expectation = expectLater(
+            upload,
+            throwsA(isA<UploadCancelledException>()),
+          );
+          await transcodeStarted.future;
+          cancellationToken.cancel();
+          transcodeFinished.complete(outputFile.path);
+          await expectation;
+
+          expect(uploadRequested, isFalse);
+          expect(await outputFile.exists(), isFalse);
+        } finally {
+          await sourceFile.parent.delete(recursive: true);
+          await outputDirectory.delete(recursive: true);
+        }
+      },
+    );
 
     test(
       'uploads a generated poster and links it from the video imeta',

@@ -329,6 +329,7 @@ class MediaUploadService {
     String? transcodedPath;
     try {
       transcodedPath = await _transcodeVideoToMp4(pickedVideo.path);
+      _throwIfCancelled(cancellationToken);
       final transcodedFile = File(transcodedPath);
       final transcodedLength = await transcodedFile.length();
       if (transcodedLength > _maxVideoSizeBytes) {
