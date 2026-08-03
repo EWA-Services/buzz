@@ -835,6 +835,15 @@ test("first-community choices route join, create, owner, and member intents", as
   await expect(
     page.getByRole("button", { name: /Create a community/ }),
   ).toBeVisible();
+  await expect(page.getByTestId("community-choice-local")).toHaveCount(0);
+  await page.getByTestId("community-choice-create").click();
+  await expect(page.getByTestId("community-create-hosted")).toContainText(
+    "Host it online",
+  );
+  await expect(page.getByTestId("community-choice-local")).toContainText(
+    "Keep it on this device",
+  );
+  await page.getByTestId("community-create-back").click();
   const existing = page.getByRole("button", {
     name: /I already have a community/,
   });
@@ -917,6 +926,7 @@ test("first-community owner can connect an existing hosted community", async ({
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await expect(page.getByText("North Star")).toBeVisible();
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(
@@ -975,6 +985,7 @@ test("first-community owner can create and connect a hosted community", async ({
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page.getByRole("button", { name: "Sign in to continue" }).click();
   await expect(
     page.getByRole("heading", { name: "Finish connecting Buzz" }),
@@ -1051,6 +1062,7 @@ test("hosted community address line stays within the card for a long name", asyn
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page.getByRole("button", { name: "Sign in to continue" }).click();
   await expect(
     page.getByRole("heading", { name: "Finish connecting Buzz" }),
@@ -1120,6 +1132,7 @@ test("first-community reports a created community without a relay address", asyn
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page.getByRole("textbox", { name: "Community name" }).fill("bee-lab");
   await expect(page.getByText("That address is available.")).toBeVisible();
   await page.getByRole("button", { name: "Next" }).click();
@@ -1151,6 +1164,7 @@ test("first-community X cancels a pending sign-in", async ({ page }) => {
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page.getByRole("button", { name: "Sign in to continue" }).click();
   await expect(page.getByText("Waiting for your browser…")).toBeVisible();
   await expect(
@@ -1158,8 +1172,9 @@ test("first-community X cancels a pending sign-in", async ({ page }) => {
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Close" }).click();
   await expect(
-    page.getByRole("button", { name: /Create a community/ }),
+    page.getByRole("heading", { name: "Create a community" }),
   ).toBeVisible();
+  await expect(page.getByTestId("community-create-hosted")).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
     .toEqual(expect.arrayContaining(["cancel_builderlab_login"]));
@@ -1193,6 +1208,7 @@ test("first-community owner can replace a mismatched account identity", async ({
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await expect(
     page.getByRole("heading", {
       name: "This account uses a different Buzz identity",
@@ -1243,6 +1259,7 @@ test("first-community explains when the local identity belongs to another accoun
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page
     .getByRole("button", { name: "Use this device's identity" })
     .click();
@@ -1284,8 +1301,10 @@ test("back clears Builderlab auth before returning to first-community choices", 
   await page.goto("/");
 
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await page.getByRole("button", { name: "Back" }).click();
   await page.getByTestId("community-choice-create").click();
+  await page.getByTestId("community-create-hosted").click();
   await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
 });
 
