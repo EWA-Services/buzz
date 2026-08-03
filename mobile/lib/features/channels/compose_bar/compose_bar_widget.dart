@@ -75,7 +75,13 @@ class ComposeBar extends HookConsumerWidget {
       return () => controller.removeListener(persistDraft);
     }, [controller, draftKey, draftIdentity]);
     final focusNode = useFocusNode();
+    useEffect(
+      () =>
+          () => _dismissComposerKeyboard(focusNode),
+      [focusNode],
+    );
     final isComposerExpanded = useState(false);
+    final isEmojiPickerOpen = useState(false);
     final attachmentSurface = useState(_AttachmentSurface.closed);
     final iosAttachmentPopover = useMemoized(
       _IOSAttachmentPopoverController.new,
@@ -105,6 +111,36 @@ class ComposeBar extends HookConsumerWidget {
     final composerExpansionProgress = composerExpansionValue
         .clamp(0.0, 1.0)
         .toDouble();
+
+    void collapseComposer() {
+      if (!isComposerExpanded.value) return;
+      showFormatting.value = false;
+      isComposerExpanded.value = false;
+    }
+
+    useEffect(() {
+      void collapseWhenUnfocused() {
+        if (!focusNode.hasFocus && !isEmojiPickerOpen.value) {
+          collapseComposer();
+        }
+      }
+
+      focusNode.addListener(collapseWhenUnfocused);
+      return () => focusNode.removeListener(collapseWhenUnfocused);
+    }, [focusNode]);
+
+    final appView = View.of(context);
+    useEffect(() {
+      final observer = _ComposerKeyboardMetricsObserver(
+        view: appView,
+        onKeyboardHidden: () {
+          collapseComposer();
+          focusNode.unfocus();
+        },
+      );
+      WidgetsBinding.instance.addObserver(observer);
+      return () => WidgetsBinding.instance.removeObserver(observer);
+    }, [appView, focusNode]);
     final resolvedHint =
         hintText ??
         (channelName.isNotEmpty ? 'Message #$channelName' : 'Message\u2026');
@@ -116,8 +152,8 @@ class ComposeBar extends HookConsumerWidget {
         composerExpansionController.animateWith(
           SpringSimulation(
             SpringDescription.withDurationAndBounce(
-              duration: const Duration(milliseconds: 280),
-              bounce: 0.16,
+              duration: const Duration(milliseconds: 220),
+              bounce: 0.08,
             ),
             composerExpansionController.value,
             target,
@@ -860,17 +896,15 @@ class ComposeBar extends HookConsumerWidget {
 
     // Suggestions and attachments live in the overlay so showing them cannot
     // reflow the composer. Both stay anchored just above the capsule.
-    return Padding(
-      padding: EdgeInsets.only(
-        left: Grid.twelve,
-        right: Grid.twelve,
-        bottom: MediaQuery.viewPaddingOf(context).bottom + Grid.xxs,
-      ),
+    final composerWidthFactor = 0.85 + 0.15 * composerExpansionProgress;
+    final hasPendingUploads = uploadingCount.value > 0;
+    return _ComposerDockFrame(
+      widthFactor: composerWidthFactor,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           _UploadProgressMotion(
-            visible: uploadingCount.value > 0,
+            visible: hasPendingUploads,
             progress: uploadProgress.value,
             reducedMotion: reducedMotion,
             onCancel: () {
@@ -880,58 +914,13 @@ class ComposeBar extends HookConsumerWidget {
               uploadProgress.value = 0;
             },
           ),
-          OverlayPortal.overlayChildLayoutBuilder(
+          _ComposerOverlayPortal(
             controller: suggestionOverlayController,
-            overlayChildBuilder: (context, layoutInfo) {
-              final composerOrigin = MatrixUtils.transformPoint(
-                layoutInfo.childPaintTransform,
-                Offset.zero,
-              );
-              return ValueListenableBuilder<_AttachmentSurface>(
-                valueListenable: attachmentSurface,
-                builder: (context, surface, _) {
-                  final surfaceDuration = reducedMotion
-                      ? Duration.zero
-                      : Duration(
-                          milliseconds:
-                              surface == _AttachmentSurface.camera ||
-                                  surface == _AttachmentSurface.photos
-                              ? 320
-                              : 250,
-                        );
-                  final expandedSurfaceCoversComposer =
-                      surface == _AttachmentSurface.camera ||
-                      surface == _AttachmentSurface.photos;
-                  final overlayAnchorY =
-                      composerOrigin.dy +
-                      (expandedSurfaceCoversComposer
-                          ? layoutInfo.childSize.height + Grid.twelve
-                          : 0);
-                  return AnimatedPositioned(
-                    duration: surfaceDuration,
-                    curve:
-                        surface == _AttachmentSurface.camera ||
-                            surface == _AttachmentSurface.photos
-                        ? const Cubic(0.34, 1.25, 0.64, 1)
-                        : const Cubic(0.22, 1, 0.36, 1),
-                    left: composerOrigin.dx,
-                    bottom: layoutInfo.overlaySize.height - overlayAnchorY,
-                    width: layoutInfo.childSize.width,
-                    child: ClipRect(
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: Grid.xxs),
-                        child: surface == _AttachmentSurface.closed
-                            ? _SuggestionPanelMotion(
-                                duration: surfaceDuration,
-                                alignment: Alignment.bottomLeft,
-                                child: buildOverlayPanel(surface),
-                              )
-                            : buildOverlayPanel(surface),
-                      ),
-                    ),
-                  );
-                },
-              );
+            attachmentSurface: attachmentSurface,
+            reducedMotion: reducedMotion,
+            buildOverlayPanel: buildOverlayPanel,
+            onDismissAttachmentSurface: () {
+              attachmentSurface.value = _AttachmentSurface.closed;
             },
             child: _ComposeBarLayout(
               attachments: attachments.value,
@@ -963,13 +952,18 @@ class ComposeBar extends HookConsumerWidget {
               },
               onEmoji: () {
                 attachmentSurface.value = _AttachmentSurface.closed;
-                showEmojiPicker(context: context, onSelect: insertEmoji);
+                isEmojiPickerOpen.value = true;
+                _showComposerEmojiPicker(context, insertEmoji, () {
+                  if (!context.mounted) return;
+                  isEmojiPickerOpen.value = false;
+                  focusNode.requestFocus();
+                });
               },
               onOpenFormatting: () {
                 attachmentSurface.value = _AttachmentSurface.closed;
                 showFormatting.value = true;
               },
-              hasPendingUploads: false,
+              hasPendingUploads: hasPendingUploads,
               canSend: controller.text.trim().isNotEmpty || hasAttachments,
               isSending: isSending.value,
             ),

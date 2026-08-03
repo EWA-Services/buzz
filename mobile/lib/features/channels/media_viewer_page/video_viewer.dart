@@ -20,6 +20,7 @@ class MediaVideoViewerPage extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = useState<VideoPlayerController?>(null);
     final videoFile = useRef<File?>(null);
+    final downloadRequestAbort = useRef<Completer<void>?>(null);
     final downloadSubscription = useRef<StreamSubscription<List<int>>?>(null);
     final downloadSink = useRef<IOSink?>(null);
     final initializeFuture = useState<Future<void>?>(null);
@@ -77,9 +78,21 @@ class MediaVideoViewerPage extends HookConsumerWidget {
 
         try {
           final client = ref.read(mediaHttpClientProvider);
-          final request = http.Request('GET', uri)
-            ..headers.addAll(auth.headersFor(videoUrl));
-          final response = await client.send(request);
+          final requestAbort = Completer<void>();
+          downloadRequestAbort.value = requestAbort;
+          final request = http.AbortableStreamedRequest(
+            'GET',
+            uri,
+            abortTrigger: requestAbort.future,
+          )..headers.addAll(auth.headersFor(videoUrl));
+          late final http.StreamedResponse response;
+          try {
+            response = await client.send(request);
+          } finally {
+            if (downloadRequestAbort.value == requestAbort) {
+              downloadRequestAbort.value = null;
+            }
+          }
           if (disposed) {
             await response.stream.drain<void>();
             return;
@@ -142,6 +155,10 @@ class MediaVideoViewerPage extends HookConsumerWidget {
       initializeFuture.value = initializeVideo();
       return () {
         disposed = true;
+        final activeRequestAbort = downloadRequestAbort.value;
+        if (activeRequestAbort != null && !activeRequestAbort.isCompleted) {
+          activeRequestAbort.complete();
+        }
         unawaited(downloadSubscription.value?.cancel() ?? Future.value());
         unawaited(downloadSink.value?.close() ?? Future.value());
         final activeController = controller.value;

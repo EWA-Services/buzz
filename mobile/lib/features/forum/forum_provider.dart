@@ -57,14 +57,14 @@ final forumThreadProvider =
 
 /// Creates a new forum post (kind:45001).
 Future<void> createForumPost(
-  WidgetRef ref, {
+  ProviderContainer container, {
   required String channelId,
   required String content,
   List<String> mentionPubkeys = const [],
   List<List<String>> mediaTags = const [],
 }) async {
-  final config = ref.read(relayConfigProvider);
-  final session = ref.read(relaySessionProvider.notifier);
+  final config = container.read(relayConfigProvider);
+  final session = container.read(relaySessionProvider.notifier);
   final relay = SignedEventRelay(session: session, nsec: config.nsec);
 
   final selfPubkey = relay.pubkey?.toLowerCase();
@@ -81,23 +81,23 @@ Future<void> createForumPost(
       ['h', channelId],
       for (final pk in normalizedMentions) ['p', pk],
       ...mediaTags,
-      ...buildCustomEmojiTags(content, ref.read(customEmojiListProvider)),
+      ...buildCustomEmojiTags(content, container.read(customEmojiListProvider)),
     ],
   );
-  ref.invalidate(forumPostsProvider(channelId));
+  container.invalidate(forumPostsProvider(channelId));
 }
 
 /// Creates a reply to a forum post (kind:45003).
 Future<void> createForumReply(
-  WidgetRef ref, {
+  ProviderContainer container, {
   required String channelId,
   required String parentEventId,
   required String content,
   List<String> mentionPubkeys = const [],
   List<List<String>> mediaTags = const [],
 }) async {
-  final config = ref.read(relayConfigProvider);
-  final session = ref.read(relaySessionProvider.notifier);
+  final config = container.read(relayConfigProvider);
+  final session = container.read(relaySessionProvider.notifier);
   final relay = SignedEventRelay(session: session, nsec: config.nsec);
 
   final selfPubkey = relay.pubkey?.toLowerCase();
@@ -115,11 +115,11 @@ Future<void> createForumReply(
       ['e', parentEventId, '', 'reply'],
       for (final pk in normalizedMentions) ['p', pk],
       ...mediaTags,
-      ...buildCustomEmojiTags(content, ref.read(customEmojiListProvider)),
+      ...buildCustomEmojiTags(content, container.read(customEmojiListProvider)),
     ],
   );
-  ref.invalidate(forumPostsProvider(channelId));
-  ref.invalidate(
+  container.invalidate(forumPostsProvider(channelId));
+  container.invalidate(
     forumThreadProvider((channelId: channelId, eventId: parentEventId)),
   );
 }
