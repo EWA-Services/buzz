@@ -445,11 +445,11 @@ class ChannelDetailPage extends HookConsumerWidget {
                             mentionPubkeys, {
                             mediaTags = const <List<String>>[],
                           }) => sendMessage.call(
-                                channelId: channel.id,
-                                content: content,
-                                mentionPubkeys: mentionPubkeys,
-                                mediaTags: mediaTags,
-                              ),
+                            channelId: channel.id,
+                            content: content,
+                            mentionPubkeys: mentionPubkeys,
+                            mediaTags: mediaTags,
+                          ),
                     ),
                   ],
                 ),

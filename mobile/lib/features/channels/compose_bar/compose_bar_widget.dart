@@ -31,6 +31,7 @@ class ComposeBar extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = useMemoized(_MarkdownEditingController.new);
+    useListenable(controller);
     useEffect(() => controller.dispose, [controller]);
     // Restore and persist unsent text as a local draft so the Activity
     // inbox Drafts filter reflects real composer state.
@@ -375,7 +376,9 @@ class ComposeBar extends HookConsumerWidget {
     // Send the message.
     Future<void> send() async {
       final text = controller.text.trim();
-      if ((text.isEmpty && !hasAttachments) || isSending.value) {
+      if ((text.isEmpty && !hasAttachments) ||
+          isSending.value ||
+          uploadingCount.value > 0) {
         return;
       }
 
@@ -494,6 +497,7 @@ class ComposeBar extends HookConsumerWidget {
         isSending.value = false;
         final queueGeneration = uploadGeneration.value;
         final cancellation = UploadCancellationToken();
+        final uploadService = ref.read(mediaUploadServiceProvider);
         activeUploadCancellation.value = cancellation;
         final delivery = onSend;
         unawaited(() async {
@@ -502,7 +506,7 @@ class ComposeBar extends HookConsumerWidget {
             for (var index = 0; index < queuedAttachments.length; index++) {
               final attachment = queuedAttachments[index];
               final descriptor = await _uploadPendingAttachment(
-                ref.read(mediaUploadServiceProvider),
+                uploadService,
                 attachment,
                 onProgress: (progress) {
                   if (context.mounted) {
@@ -966,6 +970,7 @@ class ComposeBar extends HookConsumerWidget {
                 showFormatting.value = true;
               },
               hasPendingUploads: false,
+              canSend: controller.text.trim().isNotEmpty || hasAttachments,
               isSending: isSending.value,
             ),
           ),

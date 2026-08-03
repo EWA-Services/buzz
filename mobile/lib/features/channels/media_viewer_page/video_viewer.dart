@@ -80,6 +80,10 @@ class MediaVideoViewerPage extends HookConsumerWidget {
           final request = http.Request('GET', uri)
             ..headers.addAll(auth.headersFor(videoUrl));
           final response = await client.send(request);
+          if (disposed) {
+            await response.stream.drain<void>();
+            return;
+          }
           if (response.statusCode < 200 || response.statusCode >= 300) {
             await response.stream.drain<void>();
             throw HttpException(
@@ -89,6 +93,7 @@ class MediaVideoViewerPage extends HookConsumerWidget {
           }
 
           final directory = await getTemporaryDirectory();
+          if (disposed) return;
           final file = File(
             '${directory.path}${Platform.pathSeparator}'
             'buzz-video-${DateTime.now().microsecondsSinceEpoch}'

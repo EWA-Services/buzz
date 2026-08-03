@@ -286,7 +286,6 @@ import UserNotifications
     // is cleared. A fresh composition copies only one video and one audio
     // track, so those private channels cannot reach the relay.
     let composition = AVMutableComposition()
-    let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
     guard
       let sourceVideo = asset.tracks(withMediaType: .video).first,
       let destinationVideo = composition.addMutableTrack(
@@ -305,7 +304,7 @@ import UserNotifications
     }
 
     do {
-      try destinationVideo.insertTimeRange(timeRange, of: sourceVideo, at: .zero)
+      try destinationVideo.insertTimeRange(sourceVideo.timeRange, of: sourceVideo, at: .zero)
       destinationVideo.preferredTransform = sourceVideo.preferredTransform
 
       if
@@ -315,7 +314,7 @@ import UserNotifications
           preferredTrackID: kCMPersistentTrackID_Invalid
         )
       {
-        try destinationAudio.insertTimeRange(timeRange, of: sourceAudio, at: .zero)
+        try destinationAudio.insertTimeRange(sourceAudio.timeRange, of: sourceAudio, at: .zero)
       }
     } catch {
       result(
