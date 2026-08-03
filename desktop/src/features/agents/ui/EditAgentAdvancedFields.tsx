@@ -3,6 +3,7 @@ import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { EnvVarsEditor, type EnvVarsValue } from "./EnvVarsEditor";
 import {
+  CARD_MINT_KEY_ANNOTATIONS,
   PERSONA_FIELD_CONTROL_CLASS,
   PERSONA_FIELD_SHELL_CLASS,
   PERSONA_LABEL_OPTIONAL_CLASS,
@@ -10,6 +11,7 @@ import {
 import type { AgentPersona } from "@/shared/api/types";
 import { BuzzAgentModelTuningFields } from "./buzzAgentModelTuningFields";
 import { isBuzzAgentRuntime } from "./buzzAgentConfig";
+import { EDIT_AGENT_PARALLELISM_HELP } from "../lib/agentParallelism";
 
 export function EditAgentAdvancedFields({
   acpCommand,
@@ -172,10 +174,14 @@ export function EditAgentAdvancedFields({
             id="edit-agent-parallelism"
             inputMode="numeric"
             onChange={(event) => onParallelismChange(event.target.value)}
-            placeholder="1"
+            placeholder="Current value"
+            type="text"
             value={parallelism}
           />
         </div>
+        <p className="text-xs text-muted-foreground">
+          {EDIT_AGENT_PARALLELISM_HELP}
+        </p>
       </div>
 
       {/* Relay URL: intentionally no editor. The legacy per-record relay pin
@@ -247,6 +253,7 @@ export function EditAgentAdvancedFields({
         helperText="Per-agent env vars. Override the template's vars on collision."
         inheritedFrom={inheritedEnvVars}
         inheritedLabel="template / global defaults"
+        keyAnnotations={CARD_MINT_KEY_ANNOTATIONS}
         onChange={onEnvVarsChange}
         requiredKeys={requiredEnvKeys}
         value={envVars}
