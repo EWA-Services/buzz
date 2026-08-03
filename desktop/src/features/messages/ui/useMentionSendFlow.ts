@@ -506,10 +506,7 @@ export function useMentionSendFlow({
               channelIdRef.current === null) &&
             contentRef.current.trim().length === 0 &&
             !hasUnsavedMedia();
-          const isOffChannel =
-            draft.capturedChannelId !== channelIdRef.current &&
-            channelIdRef.current !== null;
-          if (isOffChannel && draft.recoveryDraftKey) {
+          if (!canRestoreCurrentComposer && draft.recoveryDraftKey) {
             saveQueuedAttachmentsForDraft(
               draft.recoveryDraftKey,
               draft.queuedAttachments,

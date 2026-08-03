@@ -1,5 +1,6 @@
 import type { QueuedMediaAttachment } from "@/features/messages/lib/backgroundMediaUploadStore";
 import { enqueueBackgroundMediaUpload } from "@/features/messages/lib/backgroundMediaUploadStore";
+import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
 import {
   buildOutgoingMessage,
   type ImetaMedia,
@@ -11,6 +12,7 @@ import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 
 type EditDraft = {
   content: string;
+  mentionRefs: DraftMentionRef[];
   pendingImeta: ImetaMedia[];
   queuedAttachments: QueuedMediaAttachment[];
   spoileredAttachmentUrls: Set<string>;
@@ -20,10 +22,12 @@ type SubmitMessageEditOptions = EditDraft & {
   clearComposer: () => void;
   customEmoji: ReadonlyArray<CustomEmoji>;
   extractMentionPubkeys: (content: string) => string[];
+  getMentionRefs: (content: string) => DraftMentionRef[];
   editTargetId: string;
   originalContent: string;
   ownerPubkey: string | null;
   restoreComposer: (draft: EditDraft) => void;
+  restoreMentionRefs: (refs: DraftMentionRef[]) => void;
   shouldRestoreComposer: () => boolean;
   setDeferredUploadPending: (isPending: boolean) => void;
   save: (
@@ -42,11 +46,13 @@ export async function submitMessageEdit({
   customEmoji,
   editTargetId,
   extractMentionPubkeys,
+  getMentionRefs,
   originalContent,
   ownerPubkey,
   pendingImeta,
   queuedAttachments,
   restoreComposer,
+  restoreMentionRefs,
   setDeferredUploadPending,
   shouldRestoreComposer,
   save,
@@ -55,12 +61,16 @@ export async function submitMessageEdit({
 }: SubmitMessageEditOptions): Promise<void> {
   const draft: EditDraft = {
     content,
+    mentionRefs: getMentionRefs(content),
     pendingImeta: [...pendingImeta],
     queuedAttachments: [...queuedAttachments],
     spoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
   };
   const restoreDraft = () => {
-    if (shouldRestoreComposer()) restoreComposer(draft);
+    if (shouldRestoreComposer()) {
+      restoreComposer(draft);
+      restoreMentionRefs(draft.mentionRefs);
+    }
   };
   const addedMentionPubkeys = diffAddedMentionPubkeys(
     extractMentionPubkeys(originalContent),

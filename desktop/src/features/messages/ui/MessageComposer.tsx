@@ -512,6 +512,7 @@ function MessageComposerImpl({
         customEmoji,
         originalContent: editTargetRef.current.body,
         ownerPubkey: ownerPubkeyRef.current,
+        getMentionRefs: mentions.getDraftMentionRefs,
         pendingImeta: media.pendingImetaRef.current,
         queuedAttachments: media.queuedAttachmentsRef.current,
         spoileredAttachmentUrls,
@@ -535,6 +536,7 @@ function MessageComposerImpl({
           media.restoreQueuedAttachments(draft.queuedAttachments);
           setSpoileredAttachmentUrls(draft.spoileredAttachmentUrls);
         },
+        restoreMentionRefs: mentions.restoreDraftMentionRefs,
         shouldRestoreComposer: () => canRestoreEditDraftRef.current,
         setDeferredUploadPending: setDeferredEditPending,
         setUploadError: (message) =>
@@ -612,6 +614,8 @@ function MessageComposerImpl({
     persistentAudience.revision,
     isEditSubmissionLocked,
     effectiveDraftKey,
+    mentions.getDraftMentionRefs,
+    mentions.restoreDraftMentionRefs,
   ]);
   submitMessageRef.current = submitMessage;
   // ── Auto-submit on draft send ────────────────────────────────────────────
@@ -650,7 +654,6 @@ function MessageComposerImpl({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // mount-only
-
   const handleSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
