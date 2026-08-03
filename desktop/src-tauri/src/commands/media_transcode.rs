@@ -253,9 +253,8 @@ fn transcode_to_mp4_with_cancellation(
         FFMPEG_TIMEOUT,
         cancellation,
     )
-    .map_err(|error| {
+    .inspect_err(|_| {
         let _ = std::fs::remove_file(&output);
-        error
     })?;
 
     if !result.status.success() {
@@ -320,9 +319,8 @@ fn transcode_heic_to_jpeg(
         heic_timeout,
         cancellation,
     )
-    .map_err(|error| {
+    .inspect_err(|_| {
         let _ = std::fs::remove_file(&output);
-        error
     })?;
 
     if !result.status.success() {
