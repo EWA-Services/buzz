@@ -88,6 +88,8 @@ The `content` field decrypts to a UTF-8 JSON object:
 
   // Usage for THIS turn (computed delta). Fields are null when the harness
   // does not report them — a null MUST NOT be recorded or summed as zero.
+  // Exception: cache fields (cacheReadTokens, cacheWriteTokens) MUST be
+  // omitted rather than null when unavailable — see "Numeric validity" below.
   "turn": {
     "inputTokens":  1234  | null,
     "outputTokens": 567   | null,
@@ -113,20 +115,23 @@ The `content` field decrypts to a UTF-8 JSON object:
   // model for the usage represented. Omit this field when applicability cannot
   // be proven — it is never inferred from the configured/session "model" field.
   // Consumers MUST treat omission as "price unknown"; they MUST NOT infer a
-  // price from the session "model" field.
-  "pricingIdentity": {          // OPTIONAL; omit if unproven
-    "authority":  "api.anthropic.com",       // billing authority (not transport provider)
-    "model":      "claude-sonnet-4-5",       // actually-requested billable model id
-    "cacheClass": "ephemeral"                // cache-write class, when applicable
-  } | null,
+  // price from the session "model" field. pricingIdentity is OPTIONAL but NOT
+  // nullable: when present, "authority" and "model" MUST be non-null strings;
+  // "cacheClass" is omitted (not null) when it is not applicable.
+  "pricingIdentity": {          // OPTIONAL; omit entirely if unproven
+    "authority":  "api.anthropic.com",  // billing authority (not transport provider)
+    "model":      "claude-sonnet-4-5",           // actually-requested billable model id
+    "cacheClass": "ephemeral"                    // cache-write class; omit when not applicable
+  },
 
   "stopReason": "end_turn"               // optional
 }
 ```
 
 `harness` and `timestamp` are REQUIRED. All other fields are OPTIONAL or
-nullable, except as constrained below. Consumers MUST ignore unknown fields
-(forward compatibility).
+nullable, except as constrained below: `pricingIdentity` is optional but not
+nullable (omit it entirely rather than set it to null). Consumers MUST ignore
+unknown fields (forward compatibility).
 
 ### Ordering and delta recomputation
 
@@ -167,28 +172,40 @@ Where the provider exposes a cache component, publishers SHOULD report it in
 the optional `cacheReadTokens` / `cacheWriteTokens` fields inside `turn` and
 `cumulative`; these are informational subsets of `inputTokens`, not additions
 to it. Publishers MUST preserve an explicit zero when the provider reports
-zero and MUST omit the field (never null or zero) when the provider does not
-report that component — treating an unreported category as zero is incorrect.
+zero and MUST omit the field (never null or fabricated zero) when that
+component is unavailable to the publisher — including when the provider
+supports the component but the harness does not surface it. Treating an
+unreported category as zero is incorrect. Note: the payload-wide null
+guidance above does not apply to these cache fields; omission is the only
+valid representation for an unavailable cache component.
 
 `costUsd` values are estimates (provider list prices at publish time, or a
 harness-reported estimate). They are advisory, not billing records.
 
 `pricingIdentity`, when present, identifies the billing authority and
 actually-requested model for the usage represented by this event. `authority`
-is the canonical API base URL of the official provider endpoint (e.g.
-`api.anthropic.com`) — it is a billing namespace, distinct from the runtime
-transport provider. `model` is the billable model identifier as resolved at
-the point the request was made, not the configured/session model. `cacheClass`
+is a registered billing-namespace identifier: exact lowercase hostname, no
+scheme, no path, no trailing slash (registered values: `api.anthropic.com`,
+`api.openai.com`, `openrouter.ai`; the set extends only by amendment to this
+NIP). Pricing lookup is an exact string match on `(authority, model)` — any
+deviation loses the price. It is a billing namespace, distinct from the
+runtime transport provider. `model` is the
+billable model identifier as resolved at the point the request was made, not
+the configured/session model. `cacheClass`
 is the cache-write class when applicable (e.g. `ephemeral`). Publishers MUST
 omit `pricingIdentity` when any of the following apply: the request was routed
 through a custom or overridden base URL, a gateway (unless the gateway is the
 named billing authority), or an unresolved alias; the billed model identity
-cannot be confirmed from the actual response; or the event's usage represents
-a mix of turns with different billing identities. The existing `model` field
+cannot be confirmed — for direct connections to an official allowlisted
+endpoint, proof is the actually-requested resolved model; for all other routes,
+the response MUST supply authoritative billing identity; or the usage
+represented within this turn contains contributions from more than one billing
+identity (including a mix of identity-bearing and unresolved contributions).
+The existing `model` field
 retains its non-billing semantics (configured/session model) and is never
 overloaded by `pricingIdentity`. Consumers MUST treat omission of
 `pricingIdentity` as "price unknown". Consumers MAY recompute cost estimates
-using the billing identity and a pricing manifest; they MUST retain and expose
+using the billing identity and a pricing manifest; they MUST retain
 the provenance of any cost value (e.g. `manifest-estimated`, `wire-reported`).
 Consumers MUST NOT merge manifest-estimated and wire-reported costs into an
 unlabeled total.
