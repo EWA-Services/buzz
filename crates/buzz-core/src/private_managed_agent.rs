@@ -983,7 +983,7 @@ mod tests {
         let ciphertext = nip44::encrypt(
             owner.secret_key(),
             &owner.public_key(),
-            &serde_json::to_string(&body).unwrap(),
+            serde_json::to_string(&body).unwrap(),
             Version::V2,
         )
         .unwrap();
