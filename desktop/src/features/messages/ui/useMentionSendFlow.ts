@@ -541,7 +541,10 @@ export function useMentionSendFlow({
             new Set(draft.savedSpoileredAttachmentUrls),
           );
         };
-        const finishSend = async (uploaded: ImetaMedia[]) => {
+        const finishSend = async (
+          uploaded: ImetaMedia[],
+          signal?: AbortSignal,
+        ) => {
           const { content: finalContent, mediaTags } = buildOutgoingMessage(
             draft.trimmed,
             [...draft.savedImeta, ...uploaded],
@@ -558,6 +561,7 @@ export function useMentionSendFlow({
             mediaTags,
             outgoingTags ?? [],
           );
+          if (signal?.aborted) return;
           await send(
             finalContent,
             mentionPubkeys,
@@ -565,6 +569,7 @@ export function useMentionSendFlow({
             sendChannelId,
             draft.capturedThreadContext,
           );
+          if (signal?.aborted) return;
           if (effectiveExplicitAgentPubkeys.length > 0) {
             // Promote only explicitly authored agents that remained effective
             // for this successful send. "Send without inviting" removes its
@@ -589,9 +594,9 @@ export function useMentionSendFlow({
 
         if (preparedUpload) {
           uploadStarted = preparedUpload.start({
-            onComplete: async (uploaded) => {
+            onComplete: async (uploaded, signal) => {
               try {
-                await finishSend(uploaded);
+                await finishSend(uploaded, signal);
               } catch {
                 restoreComposerAfterFailure();
               }

@@ -35,7 +35,10 @@ type BackgroundUploadSnapshot = {
 type EnqueueBackgroundUploadOptions = {
   attachments: QueuedMediaAttachment[];
   onCancel?: () => void;
-  onComplete: (descriptors: BlobDescriptor[]) => Promise<void>;
+  onComplete: (
+    descriptors: BlobDescriptor[],
+    signal: AbortSignal,
+  ) => Promise<void>;
   onError: (error: unknown) => void;
 };
 
@@ -168,11 +171,14 @@ function finishTask(taskId: number): void {
   }
 }
 
-function cancelTask(task: BackgroundUploadTask): void {
-  if (task.canceled || task.isCompleting) return;
+function cancelTask(
+  task: BackgroundUploadTask,
+  { force = false, notify = true }: { force?: boolean; notify?: boolean } = {},
+): void {
+  if (task.canceled || (task.isCompleting && !force)) return;
   task.canceled = true;
   task.abortController.abort();
-  task.onCancel?.();
+  if (notify) task.onCancel?.();
   for (let index = 0; index < task.fileProgress.length; index += 1) {
     void cancelMediaUpload(progressId(task.id, index)).catch(() => undefined);
   }
@@ -203,7 +209,7 @@ export function prepareBackgroundMediaUpload(
       start: ({ onComplete, onError }) => {
         if (started) return false;
         started = true;
-        void onComplete([]).catch(onError);
+        void onComplete([], new AbortController().signal).catch(onError);
         return true;
       },
     };
@@ -264,7 +270,7 @@ export function prepareBackgroundMediaUpload(
             task.isCompleting = true;
             task.filePhases.fill("finishing");
             rebuildSnapshot();
-            await onComplete(descriptors);
+            await onComplete(descriptors, task.abortController.signal);
           }
         } catch (error) {
           if (!task.canceled) onError(error);
@@ -279,11 +285,12 @@ export function prepareBackgroundMediaUpload(
 
 export function enqueueBackgroundMediaUpload({
   attachments,
+  onCancel,
   onComplete,
   onError,
 }: EnqueueBackgroundUploadOptions): PreparedBackgroundMediaUpload {
   const preparedUpload = prepareBackgroundMediaUpload(attachments);
-  preparedUpload.start({ onComplete, onError });
+  preparedUpload.start({ onCancel, onComplete, onError });
   return preparedUpload;
 }
 
@@ -291,7 +298,11 @@ export function cancelBackgroundMediaUploads(): void {
   for (const task of [...tasks.values()]) cancelTask(task);
 }
 
-export const resetBackgroundMediaUploads = cancelBackgroundMediaUploads;
+export function resetBackgroundMediaUploads(): void {
+  for (const task of [...tasks.values()]) {
+    cancelTask(task, { force: true, notify: false });
+  }
+}
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);

@@ -25,6 +25,7 @@ type SubmitMessageEditOptions = EditDraft & {
   ownerPubkey: string | null;
   restoreComposer: (draft: EditDraft) => void;
   shouldRestoreComposer: () => boolean;
+  setDeferredUploadPending: (isPending: boolean) => void;
   save: (
     content: string,
     mediaTags?: string[][],
@@ -46,6 +47,7 @@ export async function submitMessageEdit({
   pendingImeta,
   queuedAttachments,
   restoreComposer,
+  setDeferredUploadPending,
   shouldRestoreComposer,
   save,
   setUploadError,
@@ -65,9 +67,11 @@ export async function submitMessageEdit({
     extractMentionPubkeys(content),
     ownerPubkey ?? "",
   );
+  const hasQueuedAttachments = draft.queuedAttachments.length > 0;
+  if (hasQueuedAttachments) setDeferredUploadPending(true);
   clearComposer();
 
-  const finishEdit = async (uploaded: ImetaMedia[]) => {
+  const finishEdit = async (uploaded: ImetaMedia[], signal?: AbortSignal) => {
     // An explicit empty media tag set tells edit receivers to wipe attachments.
     const { content: finalContent, mediaTags } = buildOutgoingMessage(
       content,
@@ -84,24 +88,31 @@ export async function submitMessageEdit({
         mediaTags,
         buildCustomEmojiTags(finalContent, customEmoji),
       ) ?? [];
+    if (signal?.aborted) return;
     await save(finalContent, outgoingTags, addedMentionPubkeys, editTargetId);
   };
 
-  if (draft.queuedAttachments.length > 0) {
+  if (hasQueuedAttachments) {
     enqueueBackgroundMediaUpload({
       attachments: draft.queuedAttachments,
-      onComplete: async (uploaded) => {
+      onComplete: async (uploaded, signal) => {
         try {
-          await finishEdit(uploaded);
+          await finishEdit(uploaded, signal);
         } catch {
           restoreDraft();
+        } finally {
+          setDeferredUploadPending(false);
         }
       },
       onError: (error) => {
         restoreDraft();
         setUploadError(String(error));
+        setDeferredUploadPending(false);
       },
-      onCancel: restoreDraft,
+      onCancel: () => {
+        restoreDraft();
+        setDeferredUploadPending(false);
+      },
     });
     return;
   }

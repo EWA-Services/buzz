@@ -140,6 +140,10 @@ function MessageComposerImpl({
   );
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
+  const [isDeferredEditPending, setDeferredEditPending] = React.useState(false);
+  const composerDisabled = disabled || isDeferredEditPending;
+  const isEditSubmissionLocked =
+    isSending || media.isUploading || isDeferredEditPending;
   const canRestoreEditDraftRef = React.useRef(false);
   canRestoreEditDraftRef.current =
     contentRef.current.trim().length === 0 &&
@@ -147,7 +151,6 @@ function MessageComposerImpl({
     media.queuedAttachmentsRef.current.length === 0;
   const ownsDropZone = mediaController === undefined;
   const backgroundUpload = useBackgroundMediaUpload();
-
   // Restore/persist drafts at a key boundary; the hook handles StrictMode.
   useDraftPersistLifecycle({
     effectiveDraftKey,
@@ -196,16 +199,13 @@ function MessageComposerImpl({
   editTargetRef.current = editTarget;
   extractMentionPubkeysRef.current = mentions.extractMentionPubkeys;
   ownerPubkeyRef.current = ownerPubkey;
-
   const isAutocompleteOpenRef = React.useRef(false);
   isAutocompleteOpenRef.current =
     mentions.isMentionOpen ||
     channelLinks.isChannelOpen ||
     emojiAutocomplete.isEmojiAutocompleteOpen;
-
   const submitMessageRef = React.useRef<() => void>(() => {});
   const composerScrollRef = React.useRef<HTMLDivElement>(null);
-
   // Set after `useLinkEditor` exists below; the editor's link-click handler
   // delegates through this ref to break the hook ordering cycle (the editor
   // needs `onEditLink`, but the link editor needs the editor's `richText`).
@@ -216,7 +216,6 @@ function MessageComposerImpl({
     ((info: LinkSelectionInfo | null) => void) | null
   >(null);
   const onLinkShortcutRef = React.useRef<(() => boolean) | null>(null);
-
   const scrollComposerToBottom = React.useCallback(() => {
     window.requestAnimationFrame(() => {
       const scrollElement = composerScrollRef.current;
@@ -224,7 +223,6 @@ function MessageComposerImpl({
       scrollElement.scrollTop = scrollElement.scrollHeight;
     });
   }, []);
-
   const computedPlaceholder = editTarget
     ? "Edit your message"
     : (placeholder ??
@@ -234,7 +232,7 @@ function MessageComposerImpl({
 
   const richText = useRichTextEditor({
     placeholder: computedPlaceholder,
-    editable: !disabled,
+    editable: !composerDisabled,
     mentionNames: mentions.knownNames,
     agentMentionNames: mentions.agentKnownNames,
     channelNames: channelLinks.knownChannelNames,
@@ -253,7 +251,6 @@ function MessageComposerImpl({
     onLinkShortcut: () => onLinkShortcutRef.current?.() ?? false,
     onUpdate: ({ cursor, text }) => {
       setComposerContentFromText(text);
-
       mentions.updateMentionQuery(text, cursor);
       channelLinks.updateChannelQuery(text, cursor);
       emojiAutocomplete.updateEmojiQuery(text, cursor);
@@ -381,12 +378,12 @@ function MessageComposerImpl({
   // Use focusPreserve so that re-renders (e.g. new messages arriving in
   // a thread) don't yank the cursor to the end while the user is editing.
   React.useEffect(() => {
-    if (!replyTarget || disabled) return;
+    if (!replyTarget || composerDisabled) return;
     richText.focusPreserve();
-  }, [disabled, replyTarget, richText.focusPreserve]);
+  }, [composerDisabled, replyTarget, richText.focusPreserve]);
 
   // ── Autofocus on mount / channel switch ─────────────────────────────
-  useComposerAutofocus(richText.focus, effectiveDraftKey, disabled);
+  useComposerAutofocus(richText.focus, effectiveDraftKey, composerDisabled);
 
   // ── Mention / channel / emoji autocomplete insertion ────────────────
   // Hooks return a plain-text edit descriptor; `replacePlainTextRange`
@@ -513,7 +510,7 @@ function MessageComposerImpl({
 
     // Edit mode
     if (editTargetRef.current && onEditSaveRef.current) {
-      if (isSendingRef.current || isUploadingRef.current) return;
+      if (isEditSubmissionLocked) return;
       // No empty-edit guard here: clearing an edit to empty (no text, no
       // attachments) flows through to onEditSave as empty content, which
       // deletes the message instead of publishing it (see handleEditSave).
@@ -547,6 +544,7 @@ function MessageComposerImpl({
           setSpoileredAttachmentUrls(draft.spoileredAttachmentUrls);
         },
         shouldRestoreComposer: () => canRestoreEditDraftRef.current,
+        setDeferredUploadPending: setDeferredEditPending,
         setUploadError: (message) =>
           media.setUploadState({ status: "error", message }),
       });
@@ -622,6 +620,7 @@ function MessageComposerImpl({
     persistentMentionHydration,
     persistentAudience.generation,
     persistentAudience.revision,
+    isEditSubmissionLocked,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -808,14 +807,14 @@ function MessageComposerImpl({
   // ── Send button state ───────────────────────────────────────────────
   const sendDisabled = React.useMemo(
     () =>
-      disabled ||
+      composerDisabled ||
       (editTarget !== null && media.isUploading) ||
       mentionSendFlow.isPreparingMentionSend ||
       (isContentEmpty &&
         media.pendingImeta.length === 0 &&
         media.queuedAttachments.length === 0),
     [
-      disabled,
+      composerDisabled,
       editTarget,
       media.isUploading,
       mentionSendFlow.isPreparingMentionSend,
@@ -879,6 +878,7 @@ function MessageComposerImpl({
         <div className="relative flex w-full flex-col gap-0">
           <ComposerReplyEditBanner
             isEditing={editTarget != null}
+            isEditCancelDisabled={isDeferredEditPending}
             replyTarget={replyTarget}
             onCancelEdit={onCancelEdit}
             onCancelReply={onCancelReply}
@@ -986,10 +986,10 @@ function MessageComposerImpl({
 
             <ComposerDockToolbar
               layoutMode={layoutMode}
-              composerDisabled={disabled}
+              composerDisabled={composerDisabled}
               editor={richText.editor}
               extraActions={toolbarExtraActions}
-              formattingDisabled={disabled}
+              formattingDisabled={composerDisabled}
               isEmojiPickerOpen={isEmojiPickerOpen}
               isFormattingOpen={isFormattingOpen}
               isSending={isSending}
