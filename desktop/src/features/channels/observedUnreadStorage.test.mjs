@@ -11,7 +11,7 @@ import {
 } from "./observedUnreadStorage.ts";
 import { READ_STATE_HORIZON_SECONDS } from "./readState/readStateFormat.ts";
 import {
-  makeIsolatedStorage,
+  withIsolatedStorage,
   makeObservedEvent,
   makeEventsByChannel,
 } from "./observedUnreadTestHarness.mjs";
@@ -46,8 +46,7 @@ test("observedUnreadStorageKey: prefix, normalization, and isolation", () => {
 // ── write/read round-trip ─────────────────────────────────────────────────────
 
 test("round-trip: events written are readable and intact", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
     const event = makeObservedEvent({ id: "e1", createdAt: FRESH_AT });
@@ -64,14 +63,11 @@ test("round-trip: events written are readable and intact", () => {
     assert.equal(e.id, "e1");
     assert.equal(e.createdAt, FRESH_AT);
     assert.equal(e.rootId, "root-e1");
-  } finally {
-    restore();
-  }
+  });
 });
 
 test("round-trip: relay A rows not readable under relay B", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const pubkey = "pk1";
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
@@ -83,14 +79,11 @@ test("round-trip: relay A rows not readable under relay B", () => {
     const result = readObservedUnreadFromStorage(pubkey, relayB);
 
     assert.equal(result, null, "relay B should see no data");
-  } finally {
-    restore();
-  }
+  });
 });
 
 test("read returns null for missing key, corrupt JSON, and non-object eventsByChannel", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     // Missing key.
     assert.equal(
       readObservedUnreadFromStorage("pk1", "wss://relay.example.com"),
@@ -114,14 +107,11 @@ test("read returns null for missing key, corrupt JSON, and non-object eventsByCh
       readObservedUnreadFromStorage("pk1", "wss://relay.example.com"),
       null,
     );
-  } finally {
-    restore();
-  }
+  });
 });
 
 test("read discards malformed events and keeps valid ones", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
     const valid = makeObservedEvent({ id: "e-ok", createdAt: FRESH_AT });
     window.localStorage.setItem(
@@ -152,16 +142,13 @@ test("read discards malformed events and keeps valid ones", () => {
     assert.ok(ch !== undefined);
     assert.equal(ch.size, 1, "only the valid event should survive");
     assert.ok(ch.has("e-ok"), "valid event must be kept");
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── age pruning ───────────────────────────────────────────────────────────────
 
-test("write and read prune stale events; write removes key when all stale", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+test("write prunes stale events; all-stale write removes key; read prunes bypassed stale data", () => {
+  withIsolatedStorage(() => {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
     const key = observedUnreadStorageKey(pubkey, relay);
@@ -184,7 +171,21 @@ test("write and read prune stale events; write removes key when all stale", () =
     assert.ok(!ch?.has("stale"), "stale event should be pruned on write");
     assert.ok(ch?.has("fresh"), "fresh event should survive");
 
-    // read() prunes bypassed stale data.
+    // All-stale write removes the key entirely.
+    writeObservedUnreadToStorage(
+      pubkey,
+      relay,
+      makeEventsByChannel([
+        ["ch-1", [makeObservedEvent({ id: "stale2", createdAt: STALE_AT })]],
+      ]),
+    );
+    assert.equal(
+      window.localStorage.getItem(key),
+      null,
+      "key should be absent when all events stale",
+    );
+
+    // read() prunes bypassed stale data (written directly to bypass encode pruning).
     window.localStorage.setItem(
       key,
       JSON.stringify({
@@ -200,30 +201,13 @@ test("write and read prune stale events; write removes key when all stale", () =
     const ch2 = readObservedUnreadFromStorage(pubkey, relay)?.get("ch-r");
     assert.ok(!ch2?.has("stale-r"), "stale event should be pruned on read");
     assert.ok(ch2?.has("fresh-r"), "fresh event should survive on read");
-
-    // All-stale write removes the key entirely.
-    writeObservedUnreadToStorage(
-      pubkey,
-      relay,
-      makeEventsByChannel([
-        ["ch-1", [makeObservedEvent({ id: "stale2", createdAt: STALE_AT })]],
-      ]),
-    );
-    assert.equal(
-      window.localStorage.getItem(key),
-      null,
-      "key should be absent when all events stale",
-    );
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── caps ──────────────────────────────────────────────────────────────────────
 
 test("write caps per channel at 1000 and globally at 5000 keeping newest", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
 
@@ -256,16 +240,13 @@ test("write caps per channel at 1000 and globally at 5000 keeping newest", () =>
     let total = 0;
     for (const eventsById of result.values()) total += eventsById.size;
     assert.ok(total <= 5000, `total ${total} should be <= 5000`);
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── clearObservedUnreadStorage ────────────────────────────────────────────────
 
 test("clearObservedUnreadStorage: removes scope bucket without affecting others", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
     writeObservedUnreadToStorage(
@@ -294,9 +275,7 @@ test("clearObservedUnreadStorage: removes scope bucket without affecting others"
       readObservedUnreadFromStorage("pk1", relayB)?.has("ch-b"),
       "other scope must be unaffected",
     );
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── deriveLatestByChannel ─────────────────────────────────────────────────────
@@ -326,8 +305,7 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
   // This test exercises deriveLatestByChannel to confirm ch-1 still has a
   // non-zero latest after thread A events are removed.
 
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const rootA = "root-a";
     const rootB = "root-b";
     const eventA = makeObservedEvent({
@@ -341,12 +319,10 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
       rootId: rootB,
     });
 
-    // Both threads in ch-1.
     const map = makeEventsByChannel([["ch-1", [eventA, eventB]]]);
     writeObservedUnreadToStorage("pk1", "wss://relay.example.com", map);
 
     // Simulate marker prune: remove events covered by thread:rootA marker.
-    // (In the hook this happens in the readStateVersion effect via observedUnreadEventReadAt.)
     const stored = readObservedUnreadFromStorage(
       "pk1",
       "wss://relay.example.com",
@@ -354,14 +330,9 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
     assert.ok(stored !== null);
     const ch1 = stored.get("ch-1");
     assert.ok(ch1 !== undefined);
-
-    // Remove events whose rootId matches rootA (simulating the prune pass).
     ch1.delete(eventA.id);
-
-    // Persist the pruned map.
     writeObservedUnreadToStorage("pk1", "wss://relay.example.com", stored);
 
-    // Reload.
     const result = readObservedUnreadFromStorage(
       "pk1",
       "wss://relay.example.com",
@@ -373,9 +344,7 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
     // latestByChannel for ch-1 should still reflect thread B.
     const latest = deriveLatestByChannel(result);
     assert.equal(latest.get("ch-1"), FRESH_AT + 10);
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── scope isolation (A→B→A state machine) ────────────────────────────────────
@@ -387,8 +356,7 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
 //   - A late A-scope write does not contaminate B's bucket.
 
 test("scope-isolation: A rows visible in A, absent in B, restored on A again", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
     const pubkey = "pk1";
@@ -420,16 +388,13 @@ test("scope-isolation: A rows visible in A, absent in B, restored on A again", (
     // Back in A: A's rows return.
     const backInA = readObservedUnreadFromStorage(pubkey, relayA);
     assert.ok(backInA?.has("ch-a"), "A rows return on switch back to A");
-  } finally {
-    restore();
-  }
+  });
 });
 
 test("scope-isolation: a late A-scope write does not overwrite B's bucket", () => {
   // Models: A timer fires after scope has switched to B.
   // The timer captures A's key and scope; it must write to A's key, not B's.
-  const { restore } = makeIsolatedStorage();
-  try {
+  withIsolatedStorage(() => {
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
     const pubkey = "pk1";
@@ -459,9 +424,7 @@ test("scope-isolation: a late A-scope write does not overwrite B's bucket", () =
       "B's bucket should be unaffected by A's late write",
     );
     assert.ok(!inB?.has("ch-a"), "A rows must not appear in B's bucket");
-  } finally {
-    restore();
-  }
+  });
 });
 
 // ── quota / write failure ─────────────────────────────────────────────────────

@@ -179,6 +179,19 @@ export function makeIsolatedStorage() {
   };
 }
 
+/**
+ * Run fn with an isolated localStorage instance, then restore automatically.
+ * Equivalent to makeIsolatedStorage() + try/finally restore() but less noisy.
+ */
+export function withIsolatedStorage(fn) {
+  const { restore } = makeIsolatedStorage();
+  try {
+    fn();
+  } finally {
+    restore();
+  }
+}
+
 // ── Event factories ───────────────────────────────────────────────────────────
 
 const _NOW_S = Math.floor(Date.now() / 1_000);

@@ -36,6 +36,15 @@ const RELAY = "wss://relay.example.com";
 // Use a recent timestamp so age-pruning doesn't discard events before writing.
 const NOW_S = Math.floor(Date.now() / 1_000);
 
+const DEFAULT_PROPS = {
+  pubkey: PUBKEY,
+  relay: RELAY,
+  isReady: true,
+  readStateVersion: 0,
+  getTs: () => null,
+  getOwn: () => null,
+};
+
 function makeRefs() {
   const eventsRef = { current: new Map() };
   const latestRef = { current: new Map() };
@@ -46,22 +55,16 @@ function makeRefs() {
   return { eventsRef, latestRef };
 }
 
+async function mountDefaultHook(refs, overrides = {}) {
+  return mountHook({ ...DEFAULT_PROPS, ...overrides }, refs);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test("pagehide flush: event recorded within debounce window survives reload", async () => {
   installFreshStorage();
   const refs = makeRefs();
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: true,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
-    refs,
-  );
+  const harness = await mountDefaultHook(refs);
 
   // Add a new event after mount (simulates a live message arriving mid-debounce).
   const newInner = new Map(refs.eventsRef.current.get("channel-2") ?? []);
@@ -92,17 +95,7 @@ test("pagehide flush: event recorded within debounce window survives reload", as
 test("unmount with pending write flushes before teardown", async () => {
   installFreshStorage();
   const refs = makeRefs();
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: true,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
-    refs,
-  );
+  const harness = await mountDefaultHook(refs);
 
   const inner = new Map();
   inner.set(
@@ -122,17 +115,7 @@ test("unmount with pending write flushes before teardown", async () => {
 test("clearAll cancels pending debounce so no resurrection after reload", async () => {
   installFreshStorage();
   const refs = makeRefs();
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: true,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
-    refs,
-  );
+  const harness = await mountDefaultHook(refs);
 
   harness.api.schedule(harness.api.currentScope);
   harness.api.clearAll();
@@ -172,17 +155,7 @@ test("removeChannel replaces pending snapshot so sibling channel B survives relo
     eventsRef: { current: new Map() },
     latestRef: { current: new Map() },
   };
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: true,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
-    refs,
-  );
+  const harness = await mountDefaultHook(refs);
 
   assert.ok(
     refs.eventsRef.current.has("channel-1"),
@@ -275,16 +248,9 @@ test("marker prune: thread and channel markers prune covered events; sibling cha
   writeObservedUnreadToStorage(PUBKEY, RELAY, stored);
 
   let pruneCount = 0;
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: false,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
+  const harness = await mountDefaultHook(
     { eventsRef, latestRef },
+    { isReady: false },
   );
 
   await harness.render({
@@ -323,17 +289,7 @@ test("marker prune: thread and channel markers prune covered events; sibling cha
 test("isScopeLoaded returns false before identity-reset effect commits, true after", async () => {
   installFreshStorage();
   const refs = makeRefs();
-  const harness = await mountHook(
-    {
-      pubkey: PUBKEY,
-      relay: RELAY,
-      isReady: false,
-      readStateVersion: 0,
-      getTs: () => null,
-      getOwn: () => null,
-    },
-    refs,
-  );
+  const harness = await mountDefaultHook(refs, { isReady: false });
   assert.ok(
     harness.api.isScopeLoaded(),
     "isScopeLoaded must be true after mount+effects",
@@ -528,19 +484,11 @@ test("stale scope-A operations (clearAll + removeChannel) both reject after scop
 test("unrelated rerenders do not change API object identity (catch-up stability)", async () => {
   installFreshStorage();
   const refs = makeRefs();
-  const props = {
-    pubkey: PUBKEY,
-    relay: RELAY,
-    isReady: true,
-    readStateVersion: 0,
-    getTs: () => null,
-    getOwn: () => null,
-  };
-  const harness = await mountHook(props, refs);
+  const harness = await mountDefaultHook(refs);
   const api1 = harness.api;
 
   // readStateVersion changes on every read-state advance but must NOT change the API object.
-  await harness.render({ ...props, readStateVersion: 1 });
+  await harness.render({ ...DEFAULT_PROPS, readStateVersion: 1 });
 
   const api2 = harness.api;
   assert.equal(
