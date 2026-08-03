@@ -60,6 +60,7 @@ type SendMessageWithMentionFlowInput = {
     threadHeadId: string | null;
   } | null;
   pendingImeta: ImetaMedia[];
+  linkPreviewTags?: string[][];
   sentDraftKey: string | null | undefined;
   spoileredAttachmentUrls?: ReadonlySet<string>;
   trimmed: string;
@@ -642,6 +643,7 @@ export function useMentionSendFlow({
       capturedChannelId,
       capturedThreadContext = null,
       pendingImeta,
+      linkPreviewTags = [],
       sentDraftKey,
       spoileredAttachmentUrls = new Set(),
       trimmed,
@@ -708,10 +710,10 @@ export function useMentionSendFlow({
           pendingImeta,
           spoileredAttachmentUrls,
         );
-        const outgoingTags = mergeOutgoingTags(
-          mediaTags,
-          buildCustomEmojiTags(finalContent, customEmoji),
-        );
+        const outgoingTags = mergeOutgoingTags(mediaTags, [
+          ...buildCustomEmojiTags(finalContent, customEmoji),
+          ...linkPreviewTags,
+        ]);
         const nonMemberPubkeys = getNonMemberMentionPubkeys(pubkeys);
         let promptNonMemberPubkeys = nonMemberPubkeys.filter(
           (pubkey) =>

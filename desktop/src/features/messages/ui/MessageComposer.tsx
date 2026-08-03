@@ -1,5 +1,4 @@
 import * as React from "react";
-
 import { EditorContent } from "@tiptap/react";
 import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
 import { handleAgentSnapshotPaste } from "@/features/messages/lib/agentSnapshotClipboard";
@@ -19,7 +18,6 @@ import {
   restoreImetaMediaDisplayLabels,
   stripImetaMediaLines,
 } from "@/features/messages/lib/imetaMediaMarkdown";
-
 import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditing";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
@@ -55,9 +53,8 @@ import { useMentionSendFlow } from "./useMentionSendFlow";
 import { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionHydration";
 import { useComposerContentState } from "./useComposerContentState";
 import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot";
-
+import { useComposerLinkPreviews } from "./useComposerLinkPreviews";
 import type { MessageComposerProps } from "./MessageComposer.types";
-
 function MessageComposerImpl({
   audienceContext = null,
   channelId = null,
@@ -96,6 +93,11 @@ function MessageComposerImpl({
     syncComposerContentFromEditor,
     syncContentRefFromEditorRef,
   } = useComposerContentState();
+  const [previewContent, setPreviewContent] = React.useState("");
+  const {
+    previewList: composerLinkPreviews,
+    getReadyTags: getReadyLinkPreviewTags,
+  } = useComposerLinkPreviews(previewContent);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
   const [isFormattingOpen, setIsFormattingOpen] = React.useState(false);
   const [spoileredAttachmentUrls, setSpoileredAttachmentUrls] = React.useState<
@@ -103,12 +105,10 @@ function MessageComposerImpl({
   >(() => new Set());
   const spoileredAttachmentUrlsRef = React.useRef(spoileredAttachmentUrls);
   spoileredAttachmentUrlsRef.current = spoileredAttachmentUrls;
-
   const handleFormattingToggle = React.useCallback((pressed: boolean) => {
     if (pressed) setIsEmojiPickerOpen(false);
     setIsFormattingOpen(pressed);
   }, []);
-
   const drafts = useDrafts();
   const identityQuery = useIdentityQuery();
   const effectiveDraftKey = draftKey ?? channelId;
@@ -141,13 +141,11 @@ function MessageComposerImpl({
     typingParentEventId,
     typingRootEventId,
   );
-
   // We pass a custom setter that both updates React state AND inserts
   // markdown into the Tiptap editor when media upload completes.
   const internalMedia = useMediaUpload();
   const media = mediaController ?? internalMedia;
   const ownsDropZone = mediaController === undefined;
-
   // Draft-persist lifecycle: restore/clear content + imeta + spoilered urls on
   // key change, and persist the outgoing draft in the cleanup. The StrictMode
   // fix lives inside this hook — see useDraftPersistSnapshot.ts.
@@ -179,7 +177,6 @@ function MessageComposerImpl({
     channelLinks.clearChannels();
     emojiAutocomplete.clearEmojis();
   }, [effectiveDraftKey]);
-
   const disabledRef = React.useRef(disabled);
   const isSendingRef = React.useRef(isSending);
   const isUploadingRef = React.useRef(media.isUploading);
@@ -198,7 +195,6 @@ function MessageComposerImpl({
   editTargetRef.current = editTarget;
   extractMentionPubkeysRef.current = mentions.extractMentionPubkeys;
   ownerPubkeyRef.current = ownerPubkey;
-
   const isAutocompleteOpenRef = React.useRef(false);
   isAutocompleteOpenRef.current =
     mentions.isMentionOpen ||
@@ -255,6 +251,7 @@ function MessageComposerImpl({
     onLinkShortcut: () => onLinkShortcutRef.current?.() ?? false,
     onUpdate: ({ cursor, text }) => {
       setComposerContentFromText(text);
+      setPreviewContent(text);
 
       mentions.updateMentionQuery(text, cursor);
       channelLinks.updateChannelQuery(text, cursor);
@@ -603,6 +600,7 @@ function MessageComposerImpl({
         capturedChannelId: channelId,
         capturedThreadContext,
         pendingImeta: currentPendingImeta,
+        linkPreviewTags: getReadyLinkPreviewTags(),
         sentDraftKey: resolveSentDraftKey(
           effectiveDraftKeyRef.current,
           drafts.loadDraft,
@@ -622,6 +620,7 @@ function MessageComposerImpl({
     customEmoji,
     drafts.loadDraft,
     emojiAutocomplete.clearEmojis,
+    getReadyLinkPreviewTags,
     media.pendingImetaRef,
     media.setPendingImeta,
     mentionSendFlow.isPreparingMentionSend,
@@ -956,6 +955,7 @@ function MessageComposerImpl({
               </div>
             ) : null}
 
+            {composerLinkPreviews}
             {(media.pendingImeta.length > 0 || media.isUploading) && (
               <div className="mb-2 flex items-center gap-2">
                 <ComposerAttachments
