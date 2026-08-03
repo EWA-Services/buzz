@@ -30,8 +30,15 @@ import type { UseDraftsResult } from "@/features/messages/lib/useDrafts";
 import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 import type { AcpRuntime, ChannelType, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
-import { MENTION_REFERENCE_TAG } from "@/shared/lib/resolveMentionNames";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
+import {
+  getErrorMessage,
+  isManagedAgentRunning,
+  isProviderBackedAgent,
+  MENTION_REFERENCE_TAG,
+  mergeOutgoingTagsWithReferenceMentions,
+  uniqueNormalizedPubkeys,
+} from "./useMentionSendFlow.helpers";
 
 type PendingNonMemberMentionSend = {
   capturedChannelId: string | null;
@@ -79,7 +86,7 @@ type UseMentionSendFlowOptions = {
   channelType: ChannelType | null;
   contentRef: React.MutableRefObject<string>;
   customEmoji: CustomEmoji[];
-  drafts: Pick<UseDraftsResult, "markDraftSent">;
+  drafts: Pick<UseDraftsResult, "loadDraft" | "markDraftSent" | "persistDraft">;
   emojiAutocomplete: Pick<UseEmojiAutocompleteResult, "clearEmojis">;
   mentions: UseMentionsResult;
   onPrepareSendChannel?: (
@@ -104,6 +111,8 @@ type UseMentionSendFlowOptions = {
   setContent: (content: string) => void;
   setIsEmojiPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
+  hasUnsavedMedia: () => boolean;
+  setDeferredUploadPending: (isPending: boolean) => void;
   clearQueuedAttachments: () => void;
   restoreQueuedAttachments: (attachments: QueuedMediaAttachment[]) => void;
   setSpoileredAttachmentUrls?: React.Dispatch<
@@ -117,43 +126,10 @@ type UseMentionSendFlowOptions = {
   }) => void;
   resolvePostSendContent?: (effectiveExplicitAgentPubkeys: string[]) => string;
 };
-
-function mergeOutgoingTagsWithReferenceMentions(
-  outgoingTags: string[][] | undefined,
-  pubkeys: Iterable<string>,
-) {
-  const normalizedPubkeys = uniqueNormalizedPubkeys(pubkeys);
-  if (normalizedPubkeys.length === 0) {
-    return outgoingTags;
-  }
-
-  return [
-    ...(outgoingTags ?? []),
-    ...normalizedPubkeys.map((pubkey) => [MENTION_REFERENCE_TAG, pubkey]),
-  ];
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function uniqueNormalizedPubkeys(pubkeys: Iterable<string>) {
-  return [...new Set([...pubkeys].map(normalizePubkey))].filter(Boolean);
-}
-
-function isManagedAgentRunning(agent: ManagedAgent) {
-  return agent.status === "running" || agent.status === "deployed";
-}
-
-function isProviderBackedAgent(agent: ManagedAgent) {
-  return agent.backend.type === "provider";
-}
-
 const DM_THREAD_AGENT_MENTION_ERROR =
   "Agents must already be in a DM to be mentioned in its threads. Start a new conversation that includes the agent.";
 const DM_THREAD_MEMBERS_LOADING_ERROR =
   "Checking conversation members. Try again in a moment.";
-
 export function useMentionSendFlow({
   channelId,
   channelLinks,
@@ -169,6 +145,8 @@ export function useMentionSendFlow({
   setContent,
   setIsEmojiPickerOpen,
   setPendingImeta,
+  hasUnsavedMedia,
+  setDeferredUploadPending,
   clearQueuedAttachments,
   restoreQueuedAttachments,
   setSpoileredAttachmentUrls,
@@ -197,7 +175,6 @@ export function useMentionSendFlow({
       isMountedRef.current = false;
     };
   }, []);
-
   const addMembersMutation = useAddChannelMembersMutation(channelId);
   const attachAgentMutation = useAttachManagedAgentToChannelMutation(channelId);
   const createPersonaAgentMutation =
@@ -207,18 +184,15 @@ export function useMentionSendFlow({
   const availableRuntimesQuery = useAvailableAcpRuntimes();
   const managedAgentsQuery = useManagedAgentsQuery();
   const startAgentMutation = useStartManagedAgentMutation();
-
   const getManagedAgentsByPubkey = React.useCallback(async () => {
     const agents =
       managedAgentsQuery.data ??
       (await managedAgentsQuery.refetch()).data ??
       [];
-
     return new Map(
       agents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
   }, [managedAgentsQuery.data, managedAgentsQuery.refetch]);
-
   const getAvailableRuntimes = React.useCallback(async (): Promise<
     AcpRuntime[]
   > => {
@@ -226,7 +200,6 @@ export function useMentionSendFlow({
     if (cached.length > 0 || !availableRuntimesQuery.isLoading) {
       return cached;
     }
-
     const refetched = await availableRuntimesQuery.refetch();
     return (refetched.data ?? []).filter(
       (runtime): runtime is AcpRuntime =>
@@ -239,7 +212,6 @@ export function useMentionSendFlow({
     availableRuntimesQuery.isLoading,
     availableRuntimesQuery.refetch,
   ]);
-
   const ensureManagedAgentMentionsReady = React.useCallback(
     async (
       mentionPubkeys: string[],
@@ -523,12 +495,37 @@ export function useMentionSendFlow({
           );
 
         const send = onSendRef.current;
+        const persistCanceledDraft = () => {
+          if (!draft.sentDraftKey) return;
+          const existing = drafts.loadDraft(draft.sentDraftKey);
+          if (
+            existing &&
+            (existing.content !== draft.savedContent ||
+              existing.channelId !==
+                (draft.capturedChannelId ?? draft.sentDraftKey) ||
+              JSON.stringify(existing.pendingImeta) !==
+                JSON.stringify(draft.savedImeta) ||
+              JSON.stringify(existing.spoileredAttachmentUrls) !==
+                JSON.stringify([...draft.savedSpoileredAttachmentUrls]))
+          ) {
+            return;
+          }
+          drafts.persistDraft(
+            draft.sentDraftKey,
+            draft.savedContent,
+            draft.capturedChannelId ?? draft.sentDraftKey,
+            draft.savedImeta,
+            [...draft.savedSpoileredAttachmentUrls],
+          );
+        };
         const restoreComposerAfterFailure = () => {
+          persistCanceledDraft();
           if (
             !isMountedRef.current ||
             (draft.capturedChannelId !== channelIdRef.current &&
               channelIdRef.current !== null) ||
-            contentRef.current.trim().length > 0
+            contentRef.current.trim().length > 0 ||
+            hasUnsavedMedia()
           ) {
             return;
           }
@@ -593,23 +590,33 @@ export function useMentionSendFlow({
         };
 
         if (preparedUpload) {
+          setDeferredUploadPending(true);
           uploadStarted = preparedUpload.start({
             onComplete: async (uploaded, signal) => {
               try {
                 await finishSend(uploaded, signal);
               } catch {
                 restoreComposerAfterFailure();
+              } finally {
+                setDeferredUploadPending(false);
               }
             },
             onError: (error) => {
               restoreComposerAfterFailure();
+              setDeferredUploadPending(false);
               toast.error(
                 `Upload failed: ${getErrorMessage(error, "Unknown error")}`,
               );
             },
-            onCancel: restoreComposerAfterFailure,
+            onCancel: () => {
+              restoreComposerAfterFailure();
+              setDeferredUploadPending(false);
+            },
           });
-          if (!uploadStarted) return;
+          if (!uploadStarted) {
+            setDeferredUploadPending(false);
+            return;
+          }
         }
 
         // Replace the sent body directly with its final post-send state before
@@ -655,6 +662,8 @@ export function useMentionSendFlow({
       setPendingImeta,
       restoreQueuedAttachments,
       setSpoileredAttachmentUrls,
+      hasUnsavedMedia,
+      setDeferredUploadPending,
     ],
   );
 

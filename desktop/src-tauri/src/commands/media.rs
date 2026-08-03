@@ -10,7 +10,7 @@ use crate::relay::{parse_json_response, relay_api_base_url_with_override, relay_
 
 use super::media_transcode::{
     has_heic_extension, is_heic_file, is_video_file, transcode_and_extract_poster,
-    transcode_heic_path_to_jpeg_bytes,
+    transcode_and_extract_poster_with_cancellation, transcode_heic_path_to_jpeg_bytes,
 };
 use super::media_upload_progress::{emit_media_upload_phase, send_upload_attempt, UploadAttempt};
 
@@ -731,6 +731,7 @@ pub(super) async fn upload_media_bytes_inner(
         emit_media_upload_phase(&app, progress_id.as_deref(), "processing-video");
         // Video: write to temp → transcode + extract poster → read results.
         // All blocking I/O runs off the async runtime via spawn_blocking.
+        let cancellation = cancellation.cloned();
         tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
             let tmp_input =
                 std::env::temp_dir().join(format!("buzz-drop-{}", uuid::Uuid::new_v4()));
@@ -738,7 +739,7 @@ pub(super) async fn upload_media_bytes_inner(
             let result = (|| {
                 std::fs::write(&tmp_input, &data)
                     .map_err(|e| format!("failed to write temp file: {e}"))?;
-                transcode_and_extract_poster(&tmp_input)
+                transcode_and_extract_poster_with_cancellation(&tmp_input, cancellation.as_ref())
             })();
             let _ = std::fs::remove_file(&tmp_input);
             result

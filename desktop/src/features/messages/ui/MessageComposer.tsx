@@ -141,9 +141,15 @@ function MessageComposerImpl({
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
   const [isDeferredEditPending, setDeferredEditPending] = React.useState(false);
-  const composerDisabled = disabled || isDeferredEditPending;
+  const [isDeferredUploadPending, setDeferredUploadPending] =
+    React.useState(false);
+  const composerDisabled =
+    disabled || isDeferredEditPending || isDeferredUploadPending;
   const isEditSubmissionLocked =
-    isSending || media.isUploading || isDeferredEditPending;
+    isSending ||
+    media.isUploading ||
+    isDeferredEditPending ||
+    isDeferredUploadPending;
   const canRestoreEditDraftRef = React.useRef(false);
   canRestoreEditDraftRef.current =
     contentRef.current.trim().length === 0 &&
@@ -229,7 +235,6 @@ function MessageComposerImpl({
       (replyTarget
         ? `Reply to ${replyTarget.author} in #${channelName}`
         : `Message #${channelName}`));
-
   const richText = useRichTextEditor({
     placeholder: computedPlaceholder,
     editable: !composerDisabled,
@@ -254,7 +259,6 @@ function MessageComposerImpl({
       mentions.updateMentionQuery(text, cursor);
       channelLinks.updateChannelQuery(text, cursor);
       emojiAutocomplete.updateEmojiQuery(text, cursor);
-
       persistentMentionHydrationRef.current?.reconcile(text);
 
       if (text.trim().length > 0) {
@@ -262,7 +266,6 @@ function MessageComposerImpl({
       }
     },
   });
-
   const linkEditor = useLinkEditor(richText);
   syncContentRefFromEditorRef.current = () => {
     const markdown = richText.getMarkdown();
@@ -273,7 +276,6 @@ function MessageComposerImpl({
   onLinkSelectionChangeRef.current = linkEditor.showFromCursor;
   onLinkShortcutRef.current = linkEditor.openFromShortcut;
   useComposerSpoilerParticles(richText.editor, composerScrollRef);
-
   const persistentMentionHydration = usePersistentAgentMentionHydration({
     audienceScope,
     hydrationKey: effectiveDraftKey,
@@ -287,7 +289,6 @@ function MessageComposerImpl({
     persistentMentionHydration,
   );
   persistentMentionHydrationRef.current = persistentMentionHydration;
-
   const mentionSendFlow = useMentionSendFlow({
     channelId,
     channelLinks,
@@ -303,6 +304,10 @@ function MessageComposerImpl({
     setContent: setComposerContent,
     setIsEmojiPickerOpen,
     setPendingImeta: media.setPendingImeta,
+    hasUnsavedMedia: () =>
+      media.pendingImetaRef.current.length > 0 ||
+      media.queuedAttachmentsRef.current.length > 0,
+    setDeferredUploadPending,
     clearQueuedAttachments: media.clearQueuedAttachments,
     restoreQueuedAttachments: media.restoreQueuedAttachments,
     setSpoileredAttachmentUrls,
@@ -319,7 +324,6 @@ function MessageComposerImpl({
         : undefined,
     resolvePostSendContent: persistentMentionHydration.resolvePostSendContent,
   });
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
   React.useEffect(() => {
     if (editTarget) {
@@ -373,7 +377,6 @@ function MessageComposerImpl({
       setSpoileredAttachmentUrls(restoredSpoileredAttachmentUrls);
     }
   }, [editTarget?.id]);
-
   // ── Focus on reply ──────────────────────────────────────────────────
   // Use focusPreserve so that re-renders (e.g. new messages arriving in
   // a thread) don't yank the cursor to the end while the user is editing.
@@ -381,10 +384,8 @@ function MessageComposerImpl({
     if (!replyTarget || composerDisabled) return;
     richText.focusPreserve();
   }, [composerDisabled, replyTarget, richText.focusPreserve]);
-
   // ── Autofocus on mount / channel switch ─────────────────────────────
   useComposerAutofocus(richText.focus, effectiveDraftKey, composerDisabled);
-
   // ── Mention / channel / emoji autocomplete insertion ────────────────
   // Hooks return a plain-text edit descriptor; `replacePlainTextRange`
   // applies it as a single ProseMirror transaction (no markdown round-trip).
@@ -411,7 +412,6 @@ function MessageComposerImpl({
       richText.getPlainTextAndCursor,
     ],
   );
-
   const applyChannelInsert = React.useCallback(
     (suggestion: ChannelSuggestion) => {
       const { cursor } = richText.getPlainTextAndCursor();

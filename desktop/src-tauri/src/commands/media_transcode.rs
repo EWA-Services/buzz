@@ -6,6 +6,7 @@
 //! `validate_video_file()`) and to produce a JPEG poster frame.
 
 use crate::managed_agents::resolve_command;
+use tokio_util::sync::CancellationToken;
 
 /// Build an ffmpeg command without inheriting user-controlled process knobs.
 ///
@@ -135,6 +136,17 @@ pub(super) fn run_ffmpeg_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
+    run_ffmpeg_with_cancellation(cmd, timeout, None)
+}
+
+fn run_ffmpeg_with_cancellation(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+    cancellation: Option<&CancellationToken>,
+) -> Result<std::process::Output, String> {
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err("upload cancelled".to_string());
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
@@ -162,6 +174,11 @@ pub(super) fn run_ffmpeg_with_timeout(
             }
             Ok(None) => {
                 // Still running — check deadline.
+                if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("upload cancelled".to_string());
+                }
                 if std::time::Instant::now() > deadline {
                     let _ = child.kill();
                     let _ = child.wait(); // reap zombie
@@ -181,14 +198,15 @@ pub(super) fn run_ffmpeg_with_timeout(
 /// relay's `validate_video_file()`.
 ///
 /// Returns the path to a temp file. Caller must clean up.
-pub(super) fn transcode_to_mp4(
+fn transcode_to_mp4_with_cancellation(
     source: &std::path::Path,
     ffmpeg: &std::path::Path,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<std::path::PathBuf, String> {
     // UUID-based temp path — unique across concurrent uploads.
     let output = std::env::temp_dir().join(format!("buzz-transcode-{}.mp4", uuid::Uuid::new_v4()));
 
-    let result = run_ffmpeg_with_timeout(
+    let result = run_ffmpeg_with_cancellation(
         ffmpeg_command(ffmpeg)
             .args([
                 "-y",
@@ -240,6 +258,7 @@ pub(super) fn transcode_to_mp4(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped()),
         FFMPEG_TIMEOUT,
+        cancellation,
     )?;
 
     if !result.status.success() {
@@ -340,9 +359,10 @@ pub(super) fn transcode_heic_path_to_jpeg_bytes(
 ///
 /// Best-effort: returns `Err` on failure — callers should log and continue
 /// without a poster rather than failing the entire video upload.
-pub(super) fn extract_poster_frame(
+fn extract_poster_frame_with_cancellation(
     mp4_path: &std::path::Path,
     ffmpeg: &std::path::Path,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<std::path::PathBuf, String> {
     let output = std::env::temp_dir().join(format!("buzz-poster-{}.jpg", uuid::Uuid::new_v4()));
 
@@ -350,7 +370,7 @@ pub(super) fn extract_poster_frame(
     let poster_timeout = std::time::Duration::from_secs(30);
 
     // Try seeking to 1s first (avoids black first frames from fade-ins).
-    let result = run_ffmpeg_with_timeout(
+    let result = run_ffmpeg_with_cancellation(
         ffmpeg_command(ffmpeg)
             .args([
                 "-y",
@@ -369,6 +389,7 @@ pub(super) fn extract_poster_frame(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped()),
         poster_timeout,
+        cancellation,
     )?;
 
     // If seek to 1s failed (video shorter than 1s), retry from first frame.
@@ -381,7 +402,7 @@ pub(super) fn extract_poster_frame(
             eprintln!("buzz-desktop: poster seek-to-1s failed, trying first frame: {stderr}");
         }
         let _ = std::fs::remove_file(&output);
-        let fallback = run_ffmpeg_with_timeout(
+        let fallback = run_ffmpeg_with_cancellation(
             ffmpeg_command(ffmpeg)
                 .args([
                     "-y",
@@ -398,6 +419,7 @@ pub(super) fn extract_poster_frame(
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped()),
             poster_timeout,
+            cancellation,
         )?;
 
         if !fallback.status.success() || !output.exists() {
@@ -418,21 +440,34 @@ pub(super) fn extract_poster_frame(
 pub(super) fn transcode_and_extract_poster(
     source: &std::path::Path,
 ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    transcode_and_extract_poster_with_cancellation(source, None)
+}
+
+pub(super) fn transcode_and_extract_poster_with_cancellation(
+    source: &std::path::Path,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
     let ffmpeg_path = find_ffmpeg()?;
-    let transcoded = transcode_to_mp4(source, &ffmpeg_path)?;
+    let transcoded = transcode_to_mp4_with_cancellation(source, &ffmpeg_path, cancellation)?;
 
     // Extract poster from the transcoded file (not the original — guarantees decodability).
-    let poster_bytes = match extract_poster_frame(&transcoded, &ffmpeg_path) {
-        Ok(poster_path) => {
-            let bytes = std::fs::read(&poster_path).ok();
-            let _ = std::fs::remove_file(&poster_path);
-            bytes
-        }
-        Err(e) => {
-            eprintln!("buzz-desktop: poster extraction failed (non-fatal): {e}");
-            None
-        }
-    };
+    let poster_bytes =
+        match extract_poster_frame_with_cancellation(&transcoded, &ffmpeg_path, cancellation) {
+            Ok(poster_path) => {
+                let bytes = std::fs::read(&poster_path).ok();
+                let _ = std::fs::remove_file(&poster_path);
+                bytes
+            }
+            Err(e) => {
+                eprintln!("buzz-desktop: poster extraction failed (non-fatal): {e}");
+                None
+            }
+        };
+
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        let _ = std::fs::remove_file(&transcoded);
+        return Err("upload cancelled".to_string());
+    }
 
     let video_bytes =
         std::fs::read(&transcoded).map_err(|e| format!("failed to read transcoded file: {e}"));
@@ -599,7 +634,8 @@ mod tests {
             return;
         }
 
-        let output = transcode_to_mp4(&source, &ffmpeg).expect("transcode fixture");
+        let output =
+            transcode_to_mp4_with_cancellation(&source, &ffmpeg, None).expect("transcode fixture");
         let bytes = std::fs::read(&output).expect("read transcoded video");
         let _ = std::fs::remove_file(&source);
         let _ = std::fs::remove_file(&output);

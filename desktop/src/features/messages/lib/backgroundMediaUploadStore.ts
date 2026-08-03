@@ -295,7 +295,12 @@ export function enqueueBackgroundMediaUpload({
 }
 
 export function cancelBackgroundMediaUploads(): void {
-  for (const task of [...tasks.values()]) cancelTask(task);
+  for (const task of [...tasks.values()].reverse()) {
+    if (!task.isCompleting) {
+      cancelTask(task);
+      return;
+    }
+  }
 }
 
 export function resetBackgroundMediaUploads(): void {
