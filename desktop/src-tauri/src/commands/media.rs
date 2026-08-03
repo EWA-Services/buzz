@@ -11,6 +11,7 @@ use crate::relay::{parse_json_response, relay_api_base_url_with_override, relay_
 use super::media_transcode::{
     has_heic_extension, is_heic_file, is_video_file, transcode_and_extract_poster,
     transcode_and_extract_poster_with_cancellation, transcode_heic_path_to_jpeg_bytes,
+    transcode_heic_path_to_jpeg_bytes_with_cancellation,
 };
 use super::media_upload_progress::{emit_media_upload_phase, send_upload_attempt, UploadAttempt};
 
@@ -751,6 +752,7 @@ pub(super) async fn upload_media_bytes_inner(
         // HEIC/HEIF still pasted/dropped: no filename here, so detection is
         // magic-bytes only. ffmpeg needs a path, so write to temp, transcode
         // to JPEG, and clean up. (Mirrors mobile's pre-upload transcode.)
+        let cancellation = cancellation.cloned();
         tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
             let tmp_input =
                 std::env::temp_dir().join(format!("buzz-drop-{}", uuid::Uuid::new_v4()));
@@ -758,7 +760,11 @@ pub(super) async fn upload_media_bytes_inner(
             let result = (|| {
                 std::fs::write(&tmp_input, &data)
                     .map_err(|e| format!("failed to write temp file: {e}"))?;
-                transcode_heic_path_to_jpeg_bytes(&tmp_input).map(|jpeg| (jpeg, None))
+                transcode_heic_path_to_jpeg_bytes_with_cancellation(
+                    &tmp_input,
+                    cancellation.as_ref(),
+                )
+                .map(|jpeg| (jpeg, None))
             })();
             let _ = std::fs::remove_file(&tmp_input);
             result

@@ -122,7 +122,7 @@ pub(super) fn has_heic_extension(path: &std::path::Path) -> bool {
 /// blocking a Tokio worker thread indefinitely.
 const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Run an ffmpeg command with a wall-clock timeout.
+/// Run an ffmpeg command with a wall-clock timeout and optional cancellation.
 ///
 /// Spawns the child process, polls `try_wait()` every 500ms, and kills it
 /// if the deadline is exceeded. Returns the same `Output` as `Command::output()`.
@@ -132,13 +132,6 @@ const FFMPEG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// enough progress/diagnostic output to fill the OS pipe buffer (~64 KiB),
 /// the child blocks on write() and never exits — causing a false timeout.
 /// `-loglevel error` suppresses progress spam, keeping stderr small.
-pub(super) fn run_ffmpeg_with_timeout(
-    cmd: &mut std::process::Command,
-    timeout: std::time::Duration,
-) -> Result<std::process::Output, String> {
-    run_ffmpeg_with_cancellation(cmd, timeout, None)
-}
-
 fn run_ffmpeg_with_cancellation(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -284,9 +277,10 @@ fn transcode_to_mp4_with_cancellation(
 /// Uses `-frames:v 1` so multi-image HEIF containers (Live Photos, bursts)
 /// yield a single still, and `-q:v 2` for high JPEG quality. Returns the path
 /// to a temp file. Caller must clean up.
-pub(super) fn transcode_heic_to_jpeg(
+fn transcode_heic_to_jpeg(
     source: &std::path::Path,
     ffmpeg: &std::path::Path,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<std::path::PathBuf, String> {
     // UUID-based temp path — unique across concurrent uploads.
     let output = std::env::temp_dir().join(format!("buzz-heic-{}.jpg", uuid::Uuid::new_v4()));
@@ -294,7 +288,7 @@ pub(super) fn transcode_heic_to_jpeg(
     // Single-frame image decode — 60s is generous even for large HEICs.
     let heic_timeout = std::time::Duration::from_secs(60);
 
-    let result = run_ffmpeg_with_timeout(
+    let result = run_ffmpeg_with_cancellation(
         ffmpeg_command(ffmpeg)
             .args([
                 "-y",
@@ -320,6 +314,7 @@ pub(super) fn transcode_heic_to_jpeg(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped()),
         heic_timeout,
+        cancellation,
     )?;
 
     if !result.status.success() {
@@ -343,8 +338,15 @@ pub(super) fn transcode_heic_to_jpeg(
 pub(super) fn transcode_heic_path_to_jpeg_bytes(
     source: &std::path::Path,
 ) -> Result<Vec<u8>, String> {
+    transcode_heic_path_to_jpeg_bytes_with_cancellation(source, None)
+}
+
+pub(super) fn transcode_heic_path_to_jpeg_bytes_with_cancellation(
+    source: &std::path::Path,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<u8>, String> {
     let ffmpeg_path = find_ffmpeg()?;
-    let jpeg_path = transcode_heic_to_jpeg(source, &ffmpeg_path)?;
+    let jpeg_path = transcode_heic_to_jpeg(source, &ffmpeg_path, cancellation)?;
     let bytes =
         std::fs::read(&jpeg_path).map_err(|e| format!("failed to read transcoded HEIC: {e}"));
     let _ = std::fs::remove_file(&jpeg_path);
