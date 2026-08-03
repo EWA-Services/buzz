@@ -79,9 +79,6 @@ export function useChannelPaneHandlers({
   const deleteMutateRef = React.useRef(deleteMessageMutation.mutateAsync);
   deleteMutateRef.current = deleteMessageMutation.mutateAsync;
 
-  const editMutateRef = React.useRef(editMessageMutation.mutateAsync);
-  editMutateRef.current = editMessageMutation.mutateAsync;
-
   const toggleMutateRef = React.useRef(toggleReactionMutation.mutateAsync);
   toggleMutateRef.current = toggleReactionMutation.mutateAsync;
 
@@ -176,7 +173,7 @@ export function useChannelPaneHandlers({
         return;
       }
 
-      await editMutateRef.current({
+      await editMessageMutation.mutateAsync({
         eventId,
         content,
         mediaTags,
@@ -184,7 +181,11 @@ export function useChannelPaneHandlers({
       });
       setEditTargetId((current) => (current === eventId ? null : current));
     },
-    [onRequestEmptyEditDelete, setEditTargetId],
+    [
+      editMessageMutation.mutateAsync,
+      onRequestEmptyEditDelete,
+      setEditTargetId,
+    ],
   );
 
   const handleOpenThread = React.useCallback(

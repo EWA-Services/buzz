@@ -562,7 +562,6 @@ function MessageComposerImpl({
     ) {
       return;
     }
-
     onPreparingMentionSendChange?.(true);
     persistentMentionHydration.beginSubmit();
     try {
@@ -575,6 +574,7 @@ function MessageComposerImpl({
           effectiveDraftKeyRef.current,
           drafts.loadDraft,
         ),
+        recoveryDraftKey: effectiveDraftKey,
         spoileredAttachmentUrls,
         trimmed,
         audienceGeneration: persistentAudience.generation,
@@ -611,9 +611,9 @@ function MessageComposerImpl({
     persistentAudience.generation,
     persistentAudience.revision,
     isEditSubmissionLocked,
+    effectiveDraftKey,
   ]);
   submitMessageRef.current = submitMessage;
-
   // ── Auto-submit on draft send ────────────────────────────────────────────
   // When `autoSubmitDraftKey` is set (the user clicked "Send message" in the
   // Drafts panel and confirmed), fire `submitMessage` once after mount so the

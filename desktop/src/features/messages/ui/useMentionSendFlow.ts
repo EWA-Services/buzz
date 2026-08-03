@@ -38,48 +38,10 @@ import {
   isProviderBackedAgent,
   MENTION_REFERENCE_TAG,
   mergeOutgoingTagsWithReferenceMentions,
+  type PendingNonMemberMentionSend,
+  type SendMessageWithMentionFlowInput,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
-
-type PendingNonMemberMentionSend = {
-  capturedChannelId: string | null;
-  /** Thread context captured at submit time — null for main-timeline sends. */
-  capturedThreadContext: {
-    parentEventId: string | null;
-    threadHeadId: string | null;
-  } | null;
-  trimmed: string;
-  mentionPubkeys: string[];
-  nonMemberPubkeys: string[];
-  outgoingTags?: string[][];
-  preparedManagedAgents?: ManagedAgent[];
-  readyAgentPubkeys?: string[];
-  savedContent: string;
-  savedImeta: ImetaMedia[];
-  queuedAttachments: QueuedMediaAttachment[];
-  savedSpoileredAttachmentUrls: Set<string>;
-  sentDraftKey: string | null | undefined;
-  audienceGeneration: number;
-  audienceRevision: number | null;
-  /** Agent mentions explicitly authored in this draft (never inferred). */
-  explicitAgentPubkeys: string[];
-};
-
-type SendMessageWithMentionFlowInput = {
-  capturedChannelId: string | null;
-  /** Thread context captured at submit time — null for main-timeline sends. */
-  capturedThreadContext?: {
-    parentEventId: string | null;
-    threadHeadId: string | null;
-  } | null;
-  pendingImeta: ImetaMedia[];
-  queuedAttachments?: QueuedMediaAttachment[];
-  sentDraftKey: string | null | undefined;
-  spoileredAttachmentUrls?: ReadonlySet<string>;
-  trimmed: string;
-  audienceGeneration?: number;
-  audienceRevision?: number | null;
-};
 
 type UseMentionSendFlowOptions = {
   channelId: string | null;
@@ -428,6 +390,21 @@ export function useMentionSendFlow({
         draft.queuedAttachments.length > 0
           ? prepareBackgroundMediaUpload(draft.queuedAttachments)
           : null;
+      const persistPreflightDraft = () => {
+        if (!draft.recoveryDraftKey) return;
+        drafts.persistDraft(
+          draft.recoveryDraftKey,
+          draft.savedContent,
+          draft.capturedChannelId ?? draft.recoveryDraftKey,
+          draft.savedImeta,
+          [...draft.savedSpoileredAttachmentUrls],
+          draft.savedMentionRefs,
+        );
+        saveQueuedAttachmentsForDraft(
+          draft.recoveryDraftKey,
+          draft.queuedAttachments,
+        );
+      };
       let uploadStarted = false;
       try {
         const readyAgentPubkeys = new Set(
@@ -435,6 +412,7 @@ export function useMentionSendFlow({
         );
         const managedAgentsByPubkey = await getManagedAgentsByPubkey();
         if (!isMountedRef.current) {
+          persistPreflightDraft();
           return;
         }
         for (const agent of draft.preparedManagedAgents ?? []) {
@@ -460,6 +438,7 @@ export function useMentionSendFlow({
             return;
           }
           if (!isMountedRef.current) {
+            persistPreflightDraft();
             return;
           }
         }
@@ -473,6 +452,7 @@ export function useMentionSendFlow({
           [...managedAgentsByPubkey.values()],
         );
         if (!isMountedRef.current) {
+          persistPreflightDraft();
           return;
         }
         if (agentReadiness.errors.length > 0) {
@@ -495,13 +475,13 @@ export function useMentionSendFlow({
 
         const send = onSendRef.current;
         const persistCanceledDraft = () => {
-          if (!draft.sentDraftKey) return;
-          const existing = drafts.loadDraft(draft.sentDraftKey);
+          if (!draft.recoveryDraftKey) return;
+          const existing = drafts.loadDraft(draft.recoveryDraftKey);
           if (
             existing &&
             (existing.content !== draft.savedContent ||
               existing.channelId !==
-                (draft.capturedChannelId ?? draft.sentDraftKey) ||
+                (draft.capturedChannelId ?? draft.recoveryDraftKey) ||
               JSON.stringify(existing.pendingImeta) !==
                 JSON.stringify(draft.savedImeta) ||
               JSON.stringify(existing.spoileredAttachmentUrls) !==
@@ -510,11 +490,12 @@ export function useMentionSendFlow({
             return;
           }
           drafts.persistDraft(
-            draft.sentDraftKey,
+            draft.recoveryDraftKey,
             draft.savedContent,
-            draft.capturedChannelId ?? draft.sentDraftKey,
+            draft.capturedChannelId ?? draft.recoveryDraftKey,
             draft.savedImeta,
             [...draft.savedSpoileredAttachmentUrls],
+            draft.savedMentionRefs,
           );
         };
         const restoreComposerAfterFailure = () => {
@@ -528,9 +509,9 @@ export function useMentionSendFlow({
           const isOffChannel =
             draft.capturedChannelId !== channelIdRef.current &&
             channelIdRef.current !== null;
-          if (isOffChannel && draft.sentDraftKey) {
+          if (isOffChannel && draft.recoveryDraftKey) {
             saveQueuedAttachmentsForDraft(
-              draft.sentDraftKey,
+              draft.recoveryDraftKey,
               draft.queuedAttachments,
             );
           }
@@ -542,6 +523,7 @@ export function useMentionSendFlow({
           richText.setContent(draft.savedContent);
           setPendingImeta(draft.savedImeta);
           restoreQueuedAttachments(draft.queuedAttachments);
+          mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
           setSpoileredAttachmentUrls?.(
             new Set(draft.savedSpoileredAttachmentUrls),
           );
@@ -590,7 +572,7 @@ export function useMentionSendFlow({
             drafts.markDraftSent(
               draft.sentDraftKey,
               draft.savedContent,
-              sendChannelId ?? draft.sentDraftKey,
+              draft.capturedChannelId ?? draft.sentDraftKey,
               draft.savedImeta,
               [...draft.savedSpoileredAttachmentUrls],
             );
@@ -664,6 +646,7 @@ export function useMentionSendFlow({
       restoreQueuedAttachments,
       setSpoileredAttachmentUrls,
       hasUnsavedMedia,
+      mentions.restoreDraftMentionRefs,
     ],
   );
 
@@ -731,6 +714,7 @@ export function useMentionSendFlow({
       pendingImeta,
       queuedAttachments = [],
       sentDraftKey,
+      recoveryDraftKey,
       spoileredAttachmentUrls = new Set(),
       trimmed,
       audienceGeneration = 0,
@@ -828,6 +812,8 @@ export function useMentionSendFlow({
           queuedAttachments: [...queuedAttachments],
           savedSpoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
           sentDraftKey,
+          recoveryDraftKey,
+          savedMentionRefs: mentions.getDraftMentionRefs(trimmed),
           audienceGeneration,
           audienceRevision,
           explicitAgentPubkeys,
@@ -856,6 +842,7 @@ export function useMentionSendFlow({
       mentions.extractMentionPubkeys,
       mentions.isAgentPubkey,
       mentions.isManagedAgentPubkey,
+      mentions.getDraftMentionRefs,
       onPrepareSendChannel,
     ],
   );
