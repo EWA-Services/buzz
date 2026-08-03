@@ -94,7 +94,7 @@ class MediaVideoViewerPage extends HookConsumerWidget {
             }
           }
           if (disposed) {
-            await response.stream.drain<void>();
+            await _cancelVideoResponse(response);
             return;
           }
           if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -105,8 +105,16 @@ class MediaVideoViewerPage extends HookConsumerWidget {
             );
           }
 
+          final responseSubscription = response.stream.listen(null)..pause();
+          downloadSubscription.value = responseSubscription;
           final directory = await getTemporaryDirectory();
-          if (disposed) return;
+          if (disposed) {
+            await responseSubscription.cancel();
+            if (downloadSubscription.value == responseSubscription) {
+              downloadSubscription.value = null;
+            }
+            return;
+          }
           final file = File(
             '${directory.path}${Platform.pathSeparator}'
             'buzz-video-${DateTime.now().microsecondsSinceEpoch}'
@@ -116,20 +124,19 @@ class MediaVideoViewerPage extends HookConsumerWidget {
           final sink = file.openWrite();
           downloadSink.value = sink;
           final completed = Completer<void>();
-          downloadSubscription.value = response.stream.listen(
-            sink.add,
-            onError: (Object error, StackTrace stackTrace) async {
+          responseSubscription
+            ..onData(sink.add)
+            ..onError((Object error, StackTrace stackTrace) async {
               await sink.close();
               if (!completed.isCompleted) {
                 completed.completeError(error, stackTrace);
               }
-            },
-            onDone: () async {
+            })
+            ..onDone(() async {
               await sink.close();
               if (!completed.isCompleted) completed.complete();
-            },
-            cancelOnError: true,
-          );
+            })
+            ..resume();
           await completed.future;
           downloadSubscription.value = null;
           downloadSink.value = null;
@@ -305,7 +312,9 @@ class MediaVideoViewerPage extends HookConsumerWidget {
               child: SafeArea(
                 child: _VideoViewerBottomControls(
                   controller: controller.value,
-                  onReply: () => unawaited(replyInThread()),
+                  onReply: onReply == null
+                      ? null
+                      : () => unawaited(replyInThread()),
                 ),
               ),
             ),
@@ -314,6 +323,10 @@ class MediaVideoViewerPage extends HookConsumerWidget {
       ),
     );
   }
+}
+
+Future<void> _cancelVideoResponse(http.StreamedResponse response) {
+  return response.stream.listen((_) {}).cancel();
 }
 
 String _videoFileExtension(Uri uri) {

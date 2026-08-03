@@ -1166,6 +1166,15 @@ Photos
           );
           expect(viewer.backgroundColor, Colors.black);
           expect(viewer.appBar, isNull);
+          expect(
+            find.descendant(
+              of: find.byKey(
+                const ValueKey('message-media-video-viewer-reply-thread'),
+              ),
+              matching: find.byType(IconButton),
+            ),
+            findsNothing,
+          );
 
           // Close button is present
           expect(

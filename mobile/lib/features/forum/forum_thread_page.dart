@@ -209,6 +209,7 @@ class _ThreadContent extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Background media delivery may outlive this route's WidgetRef.
     final providerContainer = ProviderScope.containerOf(context, listen: false);
+    final forumDelivery = ForumEventDelivery.capture(providerContainer);
     final post = thread.post;
     final replies = thread.replies;
 
@@ -303,8 +304,7 @@ class _ThreadContent extends HookConsumerWidget {
                   content,
                   mentionPubkeys, {
                   mediaTags = const <List<String>>[],
-                }) => createForumReply(
-                  providerContainer,
+                }) => forumDelivery.createReply(
                   channelId: channelId,
                   parentEventId: post.eventId,
                   content: content,

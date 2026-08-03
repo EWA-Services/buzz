@@ -36,6 +36,7 @@ class ForumPostsView extends HookConsumerWidget {
     // A queued attachment can finish after this view is popped. Capture the
     // app-level provider container instead of retaining the route's WidgetRef.
     final providerContainer = ProviderScope.containerOf(context, listen: false);
+    final forumDelivery = ForumEventDelivery.capture(providerContainer);
 
     // Periodic refresh (every 15s, matching desktop).
     useEffect(() {
@@ -149,8 +150,7 @@ class ForumPostsView extends HookConsumerWidget {
                   mentionPubkeys, {
                   mediaTags = const <List<String>>[],
                 }) async {
-                  await createForumPost(
-                    providerContainer,
+                  await forumDelivery.createPost(
                     channelId: channel.id,
                     content: content,
                     mentionPubkeys: mentionPubkeys,
