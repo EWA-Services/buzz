@@ -32,6 +32,7 @@ class _MessageList extends HookConsumerWidget {
     final itemPositionsListener = useMemoized(ItemPositionsListener.create);
     final isLoadingOlder = useState(false);
     final isAtLatest = useState(true);
+    final hasPendingLatest = useState(false);
     final hasUserScrolled = useState(false);
     final followsLatest = useRef(
       initialMessageId == null && initialThreadRootId == null,
@@ -57,6 +58,7 @@ class _MessageList extends HookConsumerWidget {
       if (!itemScrollController.isAttached || isAutoScrolling.value) return;
       followsLatest.value = true;
       hasUserScrolled.value = false;
+      hasPendingLatest.value = false;
       isAutoScrolling.value = true;
       try {
         await itemScrollController.scrollTo(
@@ -101,6 +103,7 @@ class _MessageList extends HookConsumerWidget {
         final nextIsAtLatest = latestIsAtBoundary();
         if (nextIsAtLatest) {
           if (!isAtLatest.value) isAtLatest.value = true;
+          if (hasPendingLatest.value) hasPendingLatest.value = false;
         } else if (followsLatest.value && !hasUserScrolled.value) {
           // The viewport can shrink when the composer or keyboard opens.
           // Preserve auto-follow until the user scrolls the timeline.
@@ -181,8 +184,11 @@ class _MessageList extends HookConsumerWidget {
       previousLatestEntryId.value = latestEntryId;
       if (previous == null ||
           latestEntryId == null ||
-          previous == latestEntryId ||
-          !isAtLatest.value) {
+          previous == latestEntryId) {
+        return null;
+      }
+      if (!isAtLatest.value) {
+        hasPendingLatest.value = true;
         return null;
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -244,6 +250,7 @@ class _MessageList extends HookConsumerWidget {
                 hasUserScrolled.value = false;
                 followsLatest.value = true;
                 if (!isAtLatest.value) isAtLatest.value = true;
+                if (hasPendingLatest.value) hasPendingLatest.value = false;
               });
             }
             return false;
@@ -354,7 +361,7 @@ class _MessageList extends HookConsumerWidget {
             ),
           ),
         ),
-        if (!isAtLatest.value)
+        if (hasPendingLatest.value)
           Positioned(
             left: 0,
             right: 0,
