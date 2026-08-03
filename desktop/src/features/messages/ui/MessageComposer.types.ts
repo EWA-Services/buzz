@@ -51,6 +51,7 @@ export type MessageComposerProps = {
   } | null;
   isSending?: boolean;
   mediaController?: MediaUploadController;
+  onDeferredEditPendingChange?: (isPending: boolean) => void;
   onCancelEdit?: () => void;
   onCancelReply?: () => void;
   /**

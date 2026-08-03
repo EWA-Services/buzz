@@ -69,6 +69,7 @@ function MessageComposerImpl({
   onAutoSubmitComplete,
   editTarget = null,
   isSending = false,
+  onDeferredEditPendingChange,
   onCancelEdit,
   onCancelReply,
   onCaptureSendContext,
@@ -141,15 +142,9 @@ function MessageComposerImpl({
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
   const [isDeferredEditPending, setDeferredEditPending] = React.useState(false);
-  const [isDeferredUploadPending, setDeferredUploadPending] =
-    React.useState(false);
-  const composerDisabled =
-    disabled || isDeferredEditPending || isDeferredUploadPending;
+  const composerDisabled = disabled || isDeferredEditPending;
   const isEditSubmissionLocked =
-    isSending ||
-    media.isUploading ||
-    isDeferredEditPending ||
-    isDeferredUploadPending;
+    isSending || media.isUploading || isDeferredEditPending;
   const canRestoreEditDraftRef = React.useRef(false);
   canRestoreEditDraftRef.current =
     contentRef.current.trim().length === 0 &&
@@ -307,7 +302,6 @@ function MessageComposerImpl({
     hasUnsavedMedia: () =>
       media.pendingImetaRef.current.length > 0 ||
       media.queuedAttachmentsRef.current.length > 0,
-    setDeferredUploadPending,
     clearQueuedAttachments: media.clearQueuedAttachments,
     restoreQueuedAttachments: media.restoreQueuedAttachments,
     setSpoileredAttachmentUrls,
@@ -324,6 +318,10 @@ function MessageComposerImpl({
         : undefined,
     resolvePostSendContent: persistentMentionHydration.resolvePostSendContent,
   });
+  React.useEffect(() => {
+    onDeferredEditPendingChange?.(isDeferredEditPending);
+    return () => onDeferredEditPendingChange?.(false);
+  }, [isDeferredEditPending, onDeferredEditPendingChange]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
   React.useEffect(() => {
     if (editTarget) {
@@ -400,7 +398,6 @@ function MessageComposerImpl({
     },
     [richText.replacePlainTextRange],
   );
-
   const applyMentionInsert = React.useCallback(
     (suggestion: MentionSuggestion) => {
       const { cursor } = richText.getPlainTextAndCursor();
@@ -423,7 +420,6 @@ function MessageComposerImpl({
       richText.getPlainTextAndCursor,
     ],
   );
-
   const applyEmojiInsert = React.useCallback(
     (suggestion: EmojiSuggestion) => {
       const { cursor } = richText.getPlainTextAndCursor();
@@ -435,7 +431,6 @@ function MessageComposerImpl({
       richText.getPlainTextAndCursor,
     ],
   );
-
   // ── Emoji insertion ─────────────────────────────────────────────────
   const insertEmoji = React.useCallback(
     (emoji: string) => {
@@ -472,12 +467,10 @@ function MessageComposerImpl({
     },
     [richText.editor, mentions.clearMentions, customEmoji],
   );
-
   // ── @ mention picker (toolbar button) ───────────────────────────────
   const openMentionPicker = React.useCallback(() => {
     if (!richText.editor) return;
     const { text, cursor } = richText.getPlainTextAndCursor();
-
     // Check if there's already an @-query in progress
     const beforeCursor = text.slice(0, cursor);
     if (/(?:^|[\s])@[^\s]*$/.test(beforeCursor)) {
@@ -492,7 +485,6 @@ function MessageComposerImpl({
       cursor > 0 && previousChar && !/\s/.test(previousChar) ? " @" : "@";
     richText.editor.chain().focus().insertContent(prefix).run();
     setIsEmojiPickerOpen(false);
-
     // Trigger mention detection after inserting @
     const { text: updatedText, cursor: updatedCursor } =
       richText.getPlainTextAndCursor();
@@ -550,7 +542,6 @@ function MessageComposerImpl({
       });
       return;
     }
-
     // Normal send
     const currentPendingImeta = media.pendingImetaRef.current;
     const currentQueuedAttachments = media.queuedAttachmentsRef.current;
@@ -564,7 +555,6 @@ function MessageComposerImpl({
     ) {
       return;
     }
-
     const capturedThreadContext = onCaptureSendContext?.() ?? null;
     if (
       capturedThreadContext !== null &&
@@ -710,7 +700,12 @@ function MessageComposerImpl({
       }
 
       // Escape in edit mode
-      if (event.key === "Escape" && editTargetRef.current && onCancelEdit) {
+      if (
+        event.key === "Escape" &&
+        !isDeferredEditPending &&
+        editTargetRef.current &&
+        onCancelEdit
+      ) {
         event.preventDefault();
         onCancelEdit();
         return;
@@ -725,6 +720,7 @@ function MessageComposerImpl({
       applyMentionInsert,
       linkEditor.isCardOpen,
       linkEditor.focusCardFirstControl,
+      isDeferredEditPending,
       onCancelEdit,
     ],
   );
@@ -905,6 +901,10 @@ function MessageComposerImpl({
             onDrop={
               ownsDropZone
                 ? (e) => {
+                    if (isDeferredEditPending) {
+                      e.preventDefault();
+                      return;
+                    }
                     void media.handleDrop(e);
                   }
                 : undefined

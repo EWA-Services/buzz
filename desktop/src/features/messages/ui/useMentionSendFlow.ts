@@ -112,7 +112,6 @@ type UseMentionSendFlowOptions = {
   setIsEmojiPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
   hasUnsavedMedia: () => boolean;
-  setDeferredUploadPending: (isPending: boolean) => void;
   clearQueuedAttachments: () => void;
   restoreQueuedAttachments: (attachments: QueuedMediaAttachment[]) => void;
   setSpoileredAttachmentUrls?: React.Dispatch<
@@ -146,7 +145,6 @@ export function useMentionSendFlow({
   setIsEmojiPickerOpen,
   setPendingImeta,
   hasUnsavedMedia,
-  setDeferredUploadPending,
   clearQueuedAttachments,
   restoreQueuedAttachments,
   setSpoileredAttachmentUrls,
@@ -590,31 +588,25 @@ export function useMentionSendFlow({
         };
 
         if (preparedUpload) {
-          setDeferredUploadPending(true);
           uploadStarted = preparedUpload.start({
             onComplete: async (uploaded, signal) => {
               try {
                 await finishSend(uploaded, signal);
               } catch {
                 restoreComposerAfterFailure();
-              } finally {
-                setDeferredUploadPending(false);
               }
             },
             onError: (error) => {
               restoreComposerAfterFailure();
-              setDeferredUploadPending(false);
               toast.error(
                 `Upload failed: ${getErrorMessage(error, "Unknown error")}`,
               );
             },
             onCancel: () => {
               restoreComposerAfterFailure();
-              setDeferredUploadPending(false);
             },
           });
           if (!uploadStarted) {
-            setDeferredUploadPending(false);
             return;
           }
         }
@@ -663,7 +655,6 @@ export function useMentionSendFlow({
       restoreQueuedAttachments,
       setSpoileredAttachmentUrls,
       hasUnsavedMedia,
-      setDeferredUploadPending,
     ],
   );
 

@@ -176,6 +176,8 @@ export const ChannelPane = React.memo(function ChannelPane({
     currentPubkey,
   );
   const mainComposerMedia = useMediaUpload({ deferUploadsUntilSend: true });
+  const [isMainDeferredEditPending, setMainDeferredEditPending] =
+    React.useState(false);
   const isNonMemberView =
     activeChannel !== null &&
     !activeChannel.isMember &&
@@ -231,15 +233,12 @@ export const ChannelPane = React.memo(function ChannelPane({
       welcomeComposerHideTimerRef.current = null;
     }
   }, []);
-
   React.useEffect(
     () => () => clearWelcomeComposerDismissTimer(),
     [clearWelcomeComposerDismissTimer],
   );
-
   React.useEffect(() => {
     clearWelcomeComposerDismissTimer();
-
     if (
       activeChannelId &&
       isActiveWelcomeChannel &&
@@ -248,7 +247,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       setWelcomeComposerBannerState("hidden");
       return;
     }
-
     setWelcomeComposerBannerState("prompt");
   }, [
     activeChannelId,
@@ -263,7 +261,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       threadMessages.some((entry) => entry.message.id === editTarget.id));
   const mainEditTarget = editTarget && !isEditInThread ? editTarget : null;
   const threadEditTarget = editTarget && isEditInThread ? editTarget : null;
-
   const findLastOwnEditable = React.useCallback(
     (candidates: TimelineMessage[]): TimelineMessage | null => {
       if (!onEdit || !currentPubkey) return null;
@@ -400,7 +397,10 @@ export const ChannelPane = React.memo(function ChannelPane({
     ],
   );
   const canDropInMainColumn =
-    hasMainComposerOverlay && !isComposerDisabled && !isSinglePanelView;
+    hasMainComposerOverlay &&
+    !isComposerDisabled &&
+    !isMainDeferredEditPending &&
+    !isSinglePanelView;
   const hasTypingActivity = typingPubkeys.length > 0;
   // Unified working set for the composer bar: observer-derived turns primary,
   // bot typing fallback (both folded together by agentWorkingSignal). This is
@@ -767,6 +767,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   onAutoSubmitComplete={handleAutoSubmitComplete}
                   isSending={isSending}
                   mediaController={mainComposerMedia}
+                  onDeferredEditPendingChange={setMainDeferredEditPending}
                   onCancelEdit={onCancelEdit}
                   onEditLastOwnMessage={handleEditLastOwnMainMessage}
                   onEditSave={onEditSave}
