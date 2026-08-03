@@ -13,6 +13,11 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
   final List<NostrEvent> _history = [];
   final List<({NostrFilter filter, void Function(NostrEvent) onEvent})>
   _subscriptions = [];
+  Completer<void>? mentionFetchGate;
+  bool failNextMentionFetch = false;
+  int mentionFetchCount = 0;
+  int activeMentionFetches = 0;
+  int maxActiveMentionFetches = 0;
 
   @override
   SessionState build() => const SessionState(status: SessionStatus.connected);
@@ -24,6 +29,25 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
   }) async {
     final h = filter.tags['#h'];
     if (h != null) dmQueries.add(h);
+    final isMentionFetch =
+        filter.tags.containsKey('#p') && filter.kinds.contains(40002);
+    if (isMentionFetch) {
+      mentionFetchCount += 1;
+      activeMentionFetches += 1;
+      if (activeMentionFetches > maxActiveMentionFetches) {
+        maxActiveMentionFetches = activeMentionFetches;
+      }
+      try {
+        final gate = mentionFetchGate;
+        if (gate != null) await gate.future;
+        if (failNextMentionFetch) {
+          failNextMentionFetch = false;
+          throw StateError('transient mention history failure');
+        }
+      } finally {
+        activeMentionFetches -= 1;
+      }
+    }
     return _history.where((event) => _matches(filter, event)).toList();
   }
 
@@ -46,6 +70,8 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
       }
     }
   }
+
+  void seed(NostrEvent event) => _history.add(event);
 
   bool _matches(NostrFilter filter, NostrEvent event) {
     if (!filter.kinds.contains(event.kind)) return false;
@@ -91,6 +117,27 @@ Channel _dmChannel(String id) => Channel(
   memberCount: 2,
   isMember: true,
 );
+
+NostrEvent _mentionEvent(String id, int createdAt) => NostrEvent(
+  id: id,
+  pubkey: 'other_pk',
+  createdAt: createdAt,
+  kind: 40002,
+  tags: const [
+    ['p', 'me_pk'],
+    ['h', 'channel-1'],
+  ],
+  content: 'Hello from the live relay',
+  sig: '',
+);
+
+Future<void> _waitFor(bool Function() predicate) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('Condition was not reached before timeout');
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -183,6 +230,74 @@ void main() {
       expect(container.read(inboxItemsProvider).single.id, 'live-mention');
     },
   );
+
+  test(
+    'serializes live refreshes and catches up events queued mid-fetch',
+    () async {
+      final session = _RecordingSessionNotifier();
+      final container = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+          myPubkeyProvider.overrideWithValue('me_pk'),
+          relaySessionProvider.overrideWith(() => session),
+          channelsProvider.overrideWith(
+            () => _FixedChannelsNotifier(const <Channel>[]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await container.read(activityProvider.future);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      session.mentionFetchGate = Completer<void>();
+      session.emit(_mentionEvent('live-one', 1_700_000_001));
+      await _waitFor(() => session.activeMentionFetches == 1);
+
+      session.emit(_mentionEvent('live-two', 1_700_000_002));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(session.maxActiveMentionFetches, 1);
+
+      session.mentionFetchGate!.complete();
+      await _waitFor(() => session.mentionFetchCount >= 3);
+      await _waitFor(() => container.read(inboxItemsProvider).length == 2);
+
+      expect(session.maxActiveMentionFetches, 1);
+      expect(
+        container.read(inboxItemsProvider).map((item) => item.id),
+        containsAll(['live-one', 'live-two']),
+      );
+    },
+  );
+
+  test('retains the loaded inbox when a live refresh fails', () async {
+    final session = _RecordingSessionNotifier()
+      ..seed(_mentionEvent('existing', 1_700_000_001));
+    final container = ProviderContainer(
+      overrides: [
+        relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+        myPubkeyProvider.overrideWithValue('me_pk'),
+        relaySessionProvider.overrideWith(() => session),
+        channelsProvider.overrideWith(
+          () => _FixedChannelsNotifier(const <Channel>[]),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(channelsProvider.future);
+    await container.read(activityProvider.future);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(container.read(inboxItemsProvider).single.id, 'existing');
+
+    session.failNextMentionFetch = true;
+    session.emit(_mentionEvent('newer', 1_700_000_002));
+    await _waitFor(() => session.mentionFetchCount >= 2);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(container.read(inboxItemsProvider).single.id, 'existing');
+  });
 }
 
 class _FixedChannelsNotifier extends ChannelsNotifier {

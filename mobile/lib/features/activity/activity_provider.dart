@@ -39,6 +39,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void Function()? _unsubscribeAddressed;
   void Function()? _unsubscribeDms;
   Timer? _liveRefreshTimer;
+  int? _liveRefreshGeneration;
+  bool _liveRefreshQueued = false;
   int _subscriptionGeneration = 0;
 
   @override
@@ -120,16 +122,47 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void _scheduleLiveRefresh(int generation) {
     if (generation != _subscriptionGeneration) return;
     _liveRefreshTimer?.cancel();
-    _liveRefreshTimer = Timer(const Duration(milliseconds: 50), () async {
-      if (generation != _subscriptionGeneration) return;
-      final next = await AsyncValue.guard(_fetch);
-      if (generation == _subscriptionGeneration) state = next;
-    });
+    _liveRefreshTimer = Timer(
+      const Duration(milliseconds: 50),
+      () => unawaited(_runLiveRefresh(generation)),
+    );
+  }
+
+  Future<void> _runLiveRefresh(int generation) async {
+    if (generation != _subscriptionGeneration) return;
+    if (_liveRefreshGeneration == generation) {
+      _liveRefreshQueued = true;
+      return;
+    }
+
+    _liveRefreshGeneration = generation;
+    try {
+      do {
+        _liveRefreshQueued = false;
+        try {
+          final next = await _fetch();
+          if (generation != _subscriptionGeneration) return;
+          state = AsyncData(next);
+        } catch (error) {
+          if (generation != _subscriptionGeneration) return;
+          debugPrint(
+            '[ActivityNotifier] live refresh failed; retaining feed: $error',
+          );
+        }
+      } while (_liveRefreshQueued && generation == _subscriptionGeneration);
+    } finally {
+      if (_liveRefreshGeneration == generation) {
+        _liveRefreshGeneration = null;
+        _liveRefreshQueued = false;
+      }
+    }
   }
 
   void _clearLiveSubscriptions() {
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = null;
+    _liveRefreshGeneration = null;
+    _liveRefreshQueued = false;
     _unsubscribeAddressed?.call();
     _unsubscribeAddressed = null;
     _unsubscribeDms?.call();

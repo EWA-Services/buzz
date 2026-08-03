@@ -93,9 +93,13 @@ class MediaPolicyUploadException implements Exception {
 class UploadCancellationToken {
   final Completer<void> _cancelled = Completer<void>();
 
+  /// Whether cancellation has been requested.
   bool get isCancelled => _cancelled.isCompleted;
+
+  /// Completes when cancellation is first requested.
   Future<void> get whenCancelled => _cancelled.future;
 
+  /// Requests cancellation. Calling this more than once has no effect.
   void cancel() {
     if (!_cancelled.isCompleted) _cancelled.complete();
   }
