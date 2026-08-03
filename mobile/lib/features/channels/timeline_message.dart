@@ -537,20 +537,48 @@ bool _isBroadcastReply(TimelineMessage message) {
   );
 }
 
+/// Combine what the relay counted with what this client has actually seen.
+///
+/// The count and last-reply time follow the desktop's `mergeThreadSummaries`
+/// (`desktop/src/features/messages/lib/threadPanel.ts`): the relay recount is
+/// authoritative for replies this client never loaded, and the locally observed
+/// replies are authoritative for anything that landed after (or alongside) the
+/// last recount. Neither source alone is complete, so take the larger count and
+/// the later reply time rather than letting one shadow the other. The facepile
+/// order is mobile's own (see [_mergeParticipants]) because this file already
+/// renders relay participants in the order the relay sent them.
 ThreadSummary? _buildSummary(
   String messageId,
   Map<String, List<TimelineMessage>> childrenByParent,
   ChannelWindowThreadSummary? relaySummary,
 ) {
-  if (relaySummary != null && relaySummary.replyCount > 0) {
-    return ThreadSummary(
-      threadHeadId: messageId,
-      replyCount: relaySummary.replyCount,
-      participantPubkeys: relaySummary.participantPubkeys.take(3).toList(),
-      lastReplyAt: relaySummary.lastReplyAt,
-    );
-  }
+  final local = _buildLocalSummary(messageId, childrenByParent);
+  final relay = _buildRelaySummary(messageId, relaySummary);
+  if (relay == null) return local;
+  if (local == null) return relay;
 
+  return ThreadSummary(
+    threadHeadId: messageId,
+    replyCount: local.replyCount > relay.replyCount
+        ? local.replyCount
+        : relay.replyCount,
+    // Relay participants first: they describe the whole thread, including
+    // replies this client never loaded, so a recount's facepile keeps rendering
+    // as it does today. Locally seen repliers (newest first, matching the relay
+    // order this file already renders) only fill the remaining slots.
+    participantPubkeys: _mergeParticipants(
+      relay.participantPubkeys,
+      local.participantPubkeys.reversed,
+    ),
+    lastReplyAt: _laterOf(local.lastReplyAt, relay.lastReplyAt),
+  );
+}
+
+/// Summary assembled from the replies present in the loaded timeline.
+ThreadSummary? _buildLocalSummary(
+  String messageId,
+  Map<String, List<TimelineMessage>> childrenByParent,
+) {
   final replies = childrenByParent[messageId];
   if (replies == null || replies.isEmpty) return null;
 
@@ -568,6 +596,46 @@ ThreadSummary? _buildSummary(
     participantPubkeys: participants.reversed.toList(),
     lastReplyAt: replies.last.createdAt,
   );
+}
+
+/// Summary from the relay's recount, or null when it reports no replies.
+ThreadSummary? _buildRelaySummary(
+  String messageId,
+  ChannelWindowThreadSummary? relaySummary,
+) {
+  if (relaySummary == null || relaySummary.replyCount <= 0) return null;
+  return ThreadSummary(
+    threadHeadId: messageId,
+    replyCount: relaySummary.replyCount,
+    participantPubkeys: relaySummary.participantPubkeys.take(3).toList(),
+    lastReplyAt: relaySummary.lastReplyAt,
+  );
+}
+
+int? _laterOf(int? left, int? right) {
+  if (left == null) return right;
+  if (right == null) return left;
+  return left > right ? left : right;
+}
+
+/// Up to 3 unique pubkeys, [primary] first.
+///
+/// [secondary] is expected newest-first so that a capped facepile keeps the
+/// most recent participants rather than the oldest ones. Uniqueness is
+/// case-insensitive because the locally assembled half lowercases pubkeys while
+/// the relay half is passed through as received.
+List<String> _mergeParticipants(
+  Iterable<String> primary,
+  Iterable<String> secondary,
+) {
+  final seen = <String>{};
+  final merged = <String>[];
+  for (final pubkey in [...primary, ...secondary]) {
+    if (!seen.add(pubkey.toLowerCase())) continue;
+    merged.add(pubkey);
+    if (merged.length == 3) break;
+  }
+  return merged;
 }
 
 class _Edit {
