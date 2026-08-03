@@ -23,6 +23,7 @@ export function MoreUnreadButton({
     >
       <UnreadPill
         direction={position === "top" ? "up" : "down"}
+        emphasis="primary"
         label={unreadCountLabel(count)}
         onClick={onClick}
         testId={testId}

@@ -609,10 +609,8 @@ export function AppShell() {
   });
   // Dispatch `buzz://message` deep links into the router.
   useMessageDeepLinks();
-  const handleOpenCreateChannel = React.useCallback(
-    () => setIsCreateChannelOpen(true),
-    [],
-  );
+  // biome-ignore format: keep compact to stay within file size limit
+  const handleOpenCreateChannel = React.useCallback(() => setIsCreateChannelOpen(true), []);
   React.useLayoutEffect(() => {
     if (settingsOpen) {
       return;
@@ -909,6 +907,7 @@ export function AppShell() {
                             selectedChannelId={selectedChannelId}
                             selectedView={selectedView}
                             unreadChannelIds={unreadChannelIds}
+                            previewActivityChannelIds={unreadThreadChannelIds}
                             unreadChannelCounts={unreadChannelCounts}
                             mutedChannelIds={mutedChannelIds}
                             onMuteChannel={muteChannel}

@@ -292,12 +292,13 @@ export function ChannelMenuButton({
   const button = (
     <SidebarMenuButton
       className={cn(
+        "data-[active=true]:font-normal",
         isActive
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
           : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-accent-foreground",
         !isActive &&
           hasTopLevelUnread &&
-          "font-semibold text-sidebar-foreground hover:text-sidebar-foreground",
+          "font-bold text-sidebar-foreground hover:text-sidebar-foreground",
         !isActive &&
           isMuted &&
           !hasTopLevelUnread &&

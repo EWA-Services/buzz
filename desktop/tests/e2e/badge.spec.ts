@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { waitForAnimations } from "../helpers/animations";
 import { TEST_IDENTITIES, installMockBridge } from "../helpers/bridge";
 
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
+const SHOTS = "test-results/channel-row-decoration-pr";
 
 async function waitForMockLiveSubscription(
   page: import("@playwright/test").Page,
@@ -67,6 +69,13 @@ async function getSettledBadgeState(page: import("@playwright/test").Page) {
   return getBadgeState(page);
 }
 
+async function getSidebarHomeBadgeText(page: import("@playwright/test").Page) {
+  return page
+    .getByTestId("sidebar-home-count")
+    .allTextContents()
+    .then((texts) => texts[0] ?? null);
+}
+
 function withAdditionalBadgeCount(baseline: { count: number }, count: number) {
   return { state: "count", count: baseline.count + count };
 }
@@ -77,6 +86,115 @@ function withDotOnlyBadge(baseline: { state: string; count: number }) {
 
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
+});
+
+test("selected Inbox and Agents rows keep their highlight without bold text", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const inbox = page
+    .getByTestId("sidebar-primary-menu")
+    .getByRole("button", { name: "Inbox", exact: true });
+  await expect(inbox).toHaveAttribute("data-active", "true");
+  await expect(inbox).toHaveCSS("font-weight", "400");
+
+  const agents = page.getByTestId("open-agents-view");
+  await agents.click();
+  await expect(agents).toHaveAttribute("data-active", "true");
+  await expect(agents).toHaveCSS("font-weight", "400");
+});
+
+test("offscreen preview activity shows the primary sidebar arrow", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 360 });
+  await page.goto("/");
+  await page.getByTestId("channel-random").click();
+  await waitForMockLiveSubscription(page, "random");
+  await page.getByTestId("channel-general").click();
+
+  const sidebarScroller = page
+    .getByTestId("app-sidebar")
+    .locator('[data-sidebar="content"]');
+  await sidebarScroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(page.getByTestId("channel-random")).not.toBeInViewport();
+
+  await page.evaluate(
+    ({ pubkey }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "random",
+        content: "A regular channel message",
+        kind: 40002,
+        pubkey,
+      });
+    },
+    { pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+  await expect(page.getByTestId("sidebar-more-unread-above")).toHaveCount(0);
+
+  const rootEventId = await page.evaluate((pubkey) => {
+    return window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "random",
+      content: "A conversation I started",
+      kind: 40002,
+      pubkey,
+    })?.id;
+  }, DEFAULT_MOCK_PUBKEY);
+  await page.evaluate(
+    ({ parentEventId, pubkey }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "random",
+        content: "A reply that appears in the channel preview",
+        kind: 40002,
+        parentEventId,
+        pubkey,
+      });
+    },
+    { parentEventId: rootEventId, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+
+  const activityArrow = page.getByTestId("sidebar-more-unread-above");
+  await expect(activityArrow).toBeVisible();
+  await expect(activityArrow).toHaveClass(/bg-primary/);
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOTS}/sidebar-preview-activity-arrow.png`,
+    clip: { x: 0, y: 0, width: 320, height: 360 },
+  });
+});
+
+test("offscreen unread DM shows the primary sidebar arrow", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-alice-tyler").click();
+  await waitForMockLiveSubscription(page, "alice-tyler");
+  await page.getByTestId("channel-general").click();
+  await page.setViewportSize({ width: 1280, height: 360 });
+
+  const sidebarScroller = page
+    .getByTestId("app-sidebar")
+    .locator('[data-sidebar="content"]');
+  await sidebarScroller.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(page.getByTestId("channel-alice-tyler")).not.toBeInViewport();
+
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "alice-tyler",
+      content: "An unread direct message",
+      kind: 40002,
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+
+  const activityArrow = page.getByTestId("sidebar-more-unread-below");
+  await expect(activityArrow).toBeVisible();
+  await expect(activityArrow).toHaveClass(/bg-primary/);
 });
 
 test("regular message bolds inactive channel without numeric badge", async ({
@@ -102,11 +220,21 @@ test("regular message bolds inactive channel without numeric badge", async ({
 
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await expect(page.getByTestId("channel-unread-dot-random")).toHaveCount(0);
   await waitForBadgeState(page, withDotOnlyBadge(baselineBadge));
+
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("channel-random")).toHaveAttribute(
+    "data-active",
+    "true",
+  );
+  await expect(page.getByTestId("channel-random")).toHaveCSS(
+    "font-weight",
+    "400",
+  );
 });
 
 test("top-level @mention bolds the channel without a row badge", async ({
@@ -136,7 +264,7 @@ test("top-level @mention bolds the channel without a row badge", async ({
 
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await expect(page.getByTestId("channel-unread-dot-random")).toHaveCount(0);
@@ -162,7 +290,7 @@ test("numeric badge increments for DM message", async ({ page }) => {
   await waitForBadgeState(page, withAdditionalBadgeCount(baselineBadge, 1));
 });
 
-test("interested thread reply shows the channel thread dot", async ({
+test("interested thread reply shows the channel preview dot without incrementing Inbox", async ({
   page,
 }) => {
   await page.goto("/");
@@ -170,6 +298,7 @@ test("interested thread reply shows the channel thread dot", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   await waitForMockLiveSubscription(page, "random");
   const baselineBadge = await getSettledBadgeState(page);
+  const baselineHomeBadge = await getSidebarHomeBadgeText(page);
 
   const rootEventId = await page.evaluate(() => {
     const root = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
@@ -196,7 +325,10 @@ test("interested thread reply shows the channel thread dot", async ({
 
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await expect(page.getByTestId("channel-unread-dot-random")).toBeVisible();
-  await waitForBadgeState(page, withAdditionalBadgeCount(baselineBadge, 1));
+  await expect
+    .poll(() => getSidebarHomeBadgeText(page))
+    .toBe(baselineHomeBadge);
+  await waitForBadgeState(page, baselineBadge);
 });
 
 test("broadcast reply bolds the channel without a thread dot", async ({
@@ -226,7 +358,7 @@ test("broadcast reply bolds the channel without a thread dot", async ({
 
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await expect(page.getByTestId("channel-unread-dot-random")).toHaveCount(0);
@@ -260,7 +392,7 @@ test("mark-as-read via context menu clears channel unread indicator", async ({
 
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
 
@@ -269,7 +401,7 @@ test("mark-as-read via context menu clears channel unread indicator", async ({
 
   await expect(page.getByTestId("channel-random")).not.toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await waitForBadgeState(page, baselineBadge);
@@ -288,7 +420,7 @@ test("mark-as-unread via context menu bolds the channel", async ({ page }) => {
 
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await expect(page.getByTestId("channel-unread-dot-random")).toHaveCount(0);
@@ -330,7 +462,7 @@ test("marking a message unread bolds its channel after leaving", async ({
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-dot-random")).toHaveCount(0);
 });
@@ -438,7 +570,7 @@ test("remote read-state rollback is ignored while local mark-unread still increm
   await page.getByText("Mark unread").click();
   await expect(page.getByTestId("channel-random")).toHaveCSS(
     "font-weight",
-    "600",
+    "700",
   );
   await expect(page.getByTestId("channel-unread-random")).toHaveCount(0);
   await waitForBadgeState(page, withAdditionalBadgeCount(baselineBadge, 1));

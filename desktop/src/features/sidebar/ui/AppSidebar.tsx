@@ -13,6 +13,7 @@ import {
   type ChannelSection,
 } from "@/features/sidebar/lib/useChannelSections";
 import { useActiveWorkingChannelsById } from "@/features/sidebar/lib/useActiveWorkingChannelsById";
+import { useOffscreenActivityChannelIds } from "@/features/sidebar/lib/useOffscreenActivityChannelIds";
 import { useDmSidebarMetadata } from "@/features/sidebar/useDmSidebarMetadata";
 import { sortDmChannelsForSidebar } from "@/features/sidebar/lib/dmSidebarSort";
 import {
@@ -108,6 +109,7 @@ type AppSidebarProps = {
     | "projects";
   unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
+  previewActivityChannelIds: ReadonlySet<string>;
   communities: Community[];
   onAddCommunity: (community: Community) => void;
   onAddCommunityOpenChange?: (open: boolean) => void;
@@ -195,6 +197,7 @@ export function AppSidebar({
   selectedView,
   unreadChannelCounts,
   unreadChannelIds,
+  previewActivityChannelIds,
   communities,
   onAddCommunity,
   onAddCommunityOpenChange,
@@ -238,6 +241,12 @@ export function AppSidebar({
   onUnstarChannel,
 }: AppSidebarProps) {
   const activeWorkingByChannelId = useActiveWorkingChannelsById();
+  const offscreenActivityChannelIds = useOffscreenActivityChannelIds({
+    activeWorkingByChannelId,
+    channels,
+    previewActivityChannelIds,
+    unreadChannelIds,
+  });
   const { status: updateStatus } = useUpdaterContext();
   const canShowSidebarUpdateCard = shouldShowSidebarUpdateCard(updateStatus);
   const { open: sidebarOpen, openMobile } = useSidebar();
@@ -502,12 +511,8 @@ export function AppSidebar({
     profile?.displayName?.trim() ||
     fallbackDisplayName?.trim() ||
     "Current identity";
-  const {
-    scrollToNextAbove,
-    scrollToNextBelow,
-    unreadAboveCount,
-    unreadBelowCount,
-  } = useUnreadOverflow({ scrollRef, unreadChannelIds });
+  // biome-ignore format: keep compact to stay within file size limit
+  const { scrollToNextAbove, scrollToNextBelow, unreadAboveCount, unreadBelowCount } = useUnreadOverflow({ scrollRef, unreadChannelIds: offscreenActivityChannelIds });
 
   const isCreatingAny =
     createDialogKind === "stream"
