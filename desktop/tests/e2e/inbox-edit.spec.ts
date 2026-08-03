@@ -12,7 +12,7 @@ const ATTACHMENT_FILENAME = "inbox-edit-proof.pdf";
 const SHOTS = "test-results/inbox-edit";
 
 type MockFeedItem = {
-  category: "activity";
+  category: "mention";
   channel_id: string;
   channel_name: string;
   content: string;
@@ -80,7 +80,7 @@ test("editing an immediate attachment reply preserves its media tags", async ({
       }
 
       pushFeedItem({
-        category: "activity",
+        category: "mention",
         channel_id: channelId,
         channel_name: "general",
         content: "Inbox thread root.",
@@ -88,7 +88,10 @@ test("editing an immediate attachment reply preserves its media tags", async ({
         id: messageId,
         kind: 9,
         pubkey,
-        tags: [["h", channelId]],
+        tags: [
+          ["h", channelId],
+          ["p", pubkey],
+        ],
       });
     },
     {
@@ -236,7 +239,7 @@ test("Inbox offers a working Edit action only for manageable messages", async ({
 
       for (const message of messages) {
         pushFeedItem({
-          category: "activity",
+          category: "mention",
           channel_id: channelId,
           channel_name: "general",
           content: message.content,
@@ -244,7 +247,10 @@ test("Inbox offers a working Edit action only for manageable messages", async ({
           id: message.id,
           kind: 9,
           pubkey: message.pubkey,
-          tags: [["h", channelId]],
+          tags: [
+            ["h", channelId],
+            ["p", currentPubkey],
+          ],
         });
       }
     },
