@@ -9,6 +9,7 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, Utf8Bytes as WsUtf8Bytes};
 use dashmap::DashMap;
+use futures_util::future::join_all;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -366,50 +367,58 @@ impl ConnectionManager {
 
     /// Staggered variant of [`Self::drain_all`]: closes every live connection
     /// with the `1012 Service Restart` frame, but spreads the closes across
-    /// `[0, jitter_ms]` instead of firing them all in one instant.
+    /// `[1, jitter_ms]` when jitter is enabled instead of firing them all in
+    /// one instant.
     ///
     /// A pod under a rolling deploy can hold thousands of WebSocket sessions.
     /// Closing them simultaneously ([`Self::drain_all`]) makes every client
     /// reconnect at the same moment — a thundering herd that drives the DB
     /// pool-timeout bursts observed on each roll. Delaying each connection's
-    /// close by an independent uniform random offset in `[0, jitter_ms]`
+    /// close by an independent uniform random offset in `[1, jitter_ms]`
     /// smears the reconnects across the window while keeping the well-attributed
     /// 1012 close.
     ///
-    /// The sticky drain flag is set **synchronously before returning**, so this
-    /// preserves [`Self::drain_all`]'s shutdown-boundary race guarantee: a
-    /// registration that lands after the snapshot self-signals immediately (no
-    /// jitter — a client arriving mid-shutdown should be closed at once). The
-    /// per-connection closes run in detached tasks; the caller's hard-drain
-    /// timeout is the backstop, so `jitter_ms` must stay well under it.
+    /// The sticky drain flag is set before the first await, preserving
+    /// [`Self::drain_all`]'s shutdown-boundary race guarantee: a registration
+    /// that lands after the snapshot self-signals immediately (no jitter — a
+    /// client arriving mid-shutdown should be closed at once). The returned
+    /// future owns every delayed close, so the caller must await it before the
+    /// relay runtime is allowed to stop.
     ///
-    /// `jitter_ms == 0` delegates to [`Self::drain_all`] for identical
-    /// synchronous behavior and no task spawns.
+    /// `jitter_ms == 0` queues and cancels every captured connection before the
+    /// first await, preserving the previous all-at-once behavior.
     ///
-    /// Returns the number of connections scheduled to close.
-    pub fn drain_all_jittered(self: &Arc<Self>, jitter_ms: u64) -> usize {
-        if jitter_ms == 0 {
-            return self.drain_all();
-        }
-        // Set the sticky flag first (store-then-iterate), so any registration
-        // racing past the snapshot below observes it and self-signals with no
-        // delay. Only the connections captured in this snapshot are jittered.
+    /// Returns the number of connections signalled.
+    pub async fn drain_all_jittered(&self, jitter_ms: u64) -> usize {
+        // Store-then-snapshot pairs with register's insert-then-check: either
+        // the snapshot captures a registration, or it observes the sticky flag
+        // and self-signals immediately.
         self.draining.store(true, Ordering::SeqCst);
-        let mut scheduled = 0usize;
-        for entry in self.connections.iter() {
-            let ctrl_tx = entry.ctrl_tx.clone();
-            let cancel = entry.cancel.clone();
-            // `rand::random % n` matches the jitter idiom used elsewhere in the
-            // relay (see main.rs cron jitter). Uniform over [0, jitter_ms).
-            let delay_ms = rand::random::<u64>() % jitter_ms;
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                let _ = ctrl_tx.try_send(Self::restart_close_frame());
-                cancel.cancel();
-            });
-            scheduled += 1;
-        }
-        scheduled
+        let frame = Self::restart_close_frame();
+        let pending: Vec<_> = self
+            .connections
+            .iter()
+            .map(|entry| {
+                let ctrl_tx = entry.ctrl_tx.clone();
+                let cancel = entry.cancel.clone();
+                let frame = frame.clone();
+                let delay_ms = if jitter_ms == 0 {
+                    0
+                } else {
+                    1 + rand::random::<u64>() % jitter_ms
+                };
+                async move {
+                    if delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                    let _ = ctrl_tx.try_send(frame);
+                    cancel.cancel();
+                }
+            })
+            .collect();
+        let count = pending.len();
+        join_all(pending).await;
+        count
     }
 
     /// The WS close frame announcing a graceful restart: 1012 Service Restart.
@@ -1999,7 +2008,7 @@ mod tests {
             3,
         );
 
-        let closed = mgr.drain_all_jittered(0);
+        let closed = mgr.drain_all_jittered(0).await;
 
         assert_eq!(closed, 1);
         assert!(cancel.is_cancelled(), "zero jitter cancels synchronously");
@@ -2037,14 +2046,16 @@ mod tests {
         );
 
         let jitter_ms = 20_000u64;
-        let scheduled = mgr.drain_all_jittered(jitter_ms);
-        assert_eq!(scheduled, 1, "connection is scheduled to close");
+        // Poll the owned drain through its first await. Dropping this future
+        // would drop the timers too; the shutdown path must retain and await it.
+        let drain = mgr.drain_all_jittered(jitter_ms);
+        tokio::pin!(drain);
+        assert!(
+            futures_util::poll!(&mut drain).is_pending(),
+            "jittered drain remains pending while its timers are owned"
+        );
 
-        // Let the spawned close task run up to its `sleep` await point without
-        // advancing the (paused) clock, so its timer is armed before we jump.
-        tokio::task::yield_now().await;
-
-        // Not closed synchronously — the delayed task is parked on its timer.
+        // Not closed yet — the delayed drain is parked on its timer.
         assert!(
             !cancel.is_cancelled(),
             "jittered close is deferred, not synchronous"
@@ -2082,9 +2093,10 @@ mod tests {
             "late registration gets the restart close with no delay"
         );
 
-        // Advance past the whole jitter window; the deferred close must fire.
+        // Advance past the whole jitter window; awaiting the owned drain must
+        // complete only after the deferred close has fired.
         tokio::time::advance(std::time::Duration::from_millis(jitter_ms + 1)).await;
-        tokio::task::yield_now().await;
+        assert_eq!(drain.await, 1, "one captured connection drained");
 
         assert!(
             cancel.is_cancelled(),

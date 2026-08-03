@@ -46,6 +46,10 @@ pub struct JoinPolicyConfig {
     pub version: String,
 }
 
+/// Maximum configured jitter, leaving ten seconds of the hard-drain budget for
+/// WebSocket close-frame delivery after the final delayed cancellation.
+pub const MAX_DRAIN_JITTER_MS: u64 = 20_000;
+
 /// Relay runtime configuration, loaded from environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -64,14 +68,15 @@ pub struct Config {
     /// Upper bound, in milliseconds, of the per-connection random delay applied
     /// when sending the `1012 Service Restart` close frame during graceful
     /// shutdown (`BUZZ_DRAIN_JITTER_MS`). Each live connection is closed after
-    /// an independent delay drawn uniformly from `[0, drain_jitter_ms]`, which
+    /// an independent delay drawn uniformly from `[1, drain_jitter_ms]` when
+    /// jitter is enabled, which
     /// spreads client reconnects across the window instead of releasing the
     /// whole pod's sockets in one instant (the reconnect thundering herd that
     /// drives DB pool-timeout bursts on rolling deploys).
     ///
-    /// Default `0` reproduces the previous all-at-once close. Values are capped
-    /// at shutdown to leave headroom under the 30s hard-drain timeout; keep it
-    /// well below `terminationGracePeriodSeconds`.
+    /// Default `0` reproduces the previous all-at-once close. Values above
+    /// [`MAX_DRAIN_JITTER_MS`] are capped, leaving headroom under the relay's
+    /// 30-second hard-drain timeout for close-frame delivery.
     pub drain_jitter_ms: u64,
     /// Redis connection URL used by the pub/sub manager.
     pub redis_url: String,
@@ -466,15 +471,19 @@ impl Config {
             Err(_) => 0,
         };
 
-        // Drain jitter: 0 = off (default). Non-negative parse, same shape as
-        // the replica-read budget above. Bound is enforced (capped) at
-        // shutdown, not here, so config never fails on a large value.
+        // Drain jitter: 0 = off (default). Clamp oversized values so every
+        // delayed close is initiated with ten seconds left in the relay's
+        // hard-drain budget.
         let drain_jitter_ms = match std::env::var("BUZZ_DRAIN_JITTER_MS") {
-            Ok(raw) => raw.trim().parse::<u64>().map_err(|_| {
-                ConfigError::InvalidValue(
-                    "BUZZ_DRAIN_JITTER_MS must be a non-negative integer".to_string(),
-                )
-            })?,
+            Ok(raw) => raw
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| {
+                    ConfigError::InvalidValue(
+                        "BUZZ_DRAIN_JITTER_MS must be a non-negative integer".to_string(),
+                    )
+                })?
+                .min(MAX_DRAIN_JITTER_MS),
             Err(_) => 0,
         };
 
@@ -1304,6 +1313,9 @@ mod tests {
         std::env::set_var("BUZZ_DRAIN_JITTER_MS", "20000");
         let set = Config::from_env().expect("config").drain_jitter_ms;
 
+        std::env::set_var("BUZZ_DRAIN_JITTER_MS", "60000");
+        let capped = Config::from_env().expect("config").drain_jitter_ms;
+
         std::env::set_var("BUZZ_DRAIN_JITTER_MS", "0");
         let zero = Config::from_env().expect("config").drain_jitter_ms;
 
@@ -1317,7 +1329,11 @@ mod tests {
         }
 
         assert_eq!(unset, 0, "drain jitter must default off");
-        assert_eq!(set, 20_000);
+        assert_eq!(set, MAX_DRAIN_JITTER_MS);
+        assert_eq!(
+            capped, MAX_DRAIN_JITTER_MS,
+            "oversized jitter leaves close-frame flush headroom"
+        );
         assert_eq!(zero, 0, "explicit 0 is off");
         assert!(
             junk.is_err(),

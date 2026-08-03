@@ -17,7 +17,7 @@ use buzz_db::{Db, DbConfig};
 use buzz_pubsub::PubSubManager;
 use buzz_search::SearchService;
 
-use buzz_relay::config::Config;
+use buzz_relay::config::{Config, MAX_DRAIN_JITTER_MS};
 use buzz_relay::metrics as relay_metrics;
 use buzz_relay::router::{build_health_router, build_router};
 use buzz_relay::state::AppState;
@@ -1189,6 +1189,8 @@ async fn run_periodic_until_cancelled<Tick, TickFuture>(
 /// │         → graceful drain (30s) → exit                   │
 /// └─────────────────────────────────────────────────────────┘
 /// ```
+const GRACEFUL_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn serve(
     router: axum::Router,
     health_router: axum::Router,
@@ -1209,7 +1211,7 @@ async fn serve(
     let drain_conn_manager = Arc::clone(&state.conn_manager);
     let drain_jitter_ms = state.config.drain_jitter_ms;
     let tx = shutdown_tx.clone();
-    tokio::spawn(async move {
+    let shutdown_handle = tokio::spawn(async move {
         shutdown_signal().await;
         shutdown_flag.store(true, Ordering::Relaxed);
         info!("Shutdown signal received — readiness now returns 503");
@@ -1217,26 +1219,25 @@ async fn serve(
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         info!("Starting graceful drain (30s timeout)");
         let _ = tx.send(true);
-        // Tell every connected client to reconnect NOW. Without this, upgraded
-        // WebSocket connections outlive the listener drain: clients ride the
-        // dying pod until the forced exit below and only learn about the
-        // restart from a TCP reset. The 1012 close frame turns a 35s silent
-        // death into an immediate, well-attributed reconnect.
-        //
-        // With BUZZ_DRAIN_JITTER_MS > 0, the closes are spread across the
-        // jitter window instead of firing all at once, so a pod's clients do
-        // not reconnect in a single thundering herd. The 30s hard timeout
-        // below backstops the window; keep the jitter well under it.
-        let closed = drain_conn_manager.drain_all_jittered(drain_jitter_ms);
+        // Keep the original process-level backstop alive while listener and
+        // upgraded-socket shutdown proceeds. The caller aborts it only after
+        // Axum and the owned jitter drain have both completed.
+        let hard_shutdown = tokio::spawn(async {
+            tokio::time::sleep(GRACEFUL_DRAIN_TIMEOUT).await;
+            tracing::error!("Drain timeout exceeded — forcing exit");
+            std::process::exit(1);
+        });
+        let hard_shutdown_abort = hard_shutdown.abort_handle();
+        // Stop accepting first, then retain ownership of every delayed close
+        // until its 1012 frame has been queued and its send loop cancelled.
+        let closed = drain_conn_manager.drain_all_jittered(drain_jitter_ms).await;
         info!(
             connections = closed,
             jitter_ms = drain_jitter_ms,
+            max_jitter_ms = MAX_DRAIN_JITTER_MS,
             "Signalled restart close to all live WebSocket connections"
         );
-        // Hard timeout: force exit if connections don't drain within 30s.
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        tracing::error!("Drain timeout exceeded — forcing exit");
-        std::process::exit(1);
+        hard_shutdown_abort
     });
 
     let tcp_listener = tokio::net::TcpListener::bind(&config.bind_addr)
@@ -1284,7 +1285,11 @@ async fn serve(
         .await
         .map_err(|e| anyhow::anyhow!("TCP server error: {e}"))?;
 
+        let hard_shutdown = shutdown_handle
+            .await
+            .map_err(|e| anyhow::anyhow!("Shutdown task failed: {e}"))?;
         uds_handle.abort();
+        hard_shutdown.abort();
         return Ok(());
     }
 
@@ -1305,6 +1310,10 @@ async fn serve(
     .await
     .map_err(|e| anyhow::anyhow!("Server error: {e}"))?;
 
+    let hard_shutdown = shutdown_handle
+        .await
+        .map_err(|e| anyhow::anyhow!("Shutdown task failed: {e}"))?;
+    hard_shutdown.abort();
     Ok(())
 }
 
