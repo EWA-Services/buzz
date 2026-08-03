@@ -7490,4 +7490,115 @@ mod tests {
             "batch prompt: unresolved metadata must not include canvas; got:\n{prompt}"
         );
     }
+
+    // ── Unresolved-metadata: fetch_conversation_context DM selection (A1/A2) ──
+
+    /// `fetch_conversation_context` with `is_dm_turn = true` must take the DM
+    /// history path and return `ConversationContext::Dm`; with `is_dm_turn = false`
+    /// it must skip the DM fetch entirely (no HTTP request).
+    ///
+    /// This is the missing tripwire for the pass-2 fix: proves the authoritative
+    /// `is_dm_turn` boolean governs `fetch_conversation_context` so that a
+    /// regression silently reverting to `unwrap_or(false)` breaks this test.
+    #[tokio::test]
+    async fn test_fetch_conversation_context_dm_classification_is_authoritative() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Build a minimal DM events response that parse_nostr_dm_response accepts:
+        // one event with content + created_at. pubkey is optional in the parser.
+        let dm_event = serde_json::json!([{
+            "content": "hello from dm",
+            "created_at": 1_700_000_000u64,
+            "pubkey": "aabbcc"
+        }]);
+        let body = dm_event.to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                server_requests.fetch_add(1, Ordering::SeqCst);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let agent_keys = nostr::Keys::generate();
+        let rest = crate::relay::RestClient {
+            http: reqwest::Client::new(),
+            base_url,
+            keys: agent_keys.clone(),
+            auth_tag_json: None,
+        };
+
+        // A batch with no thread tags — ensures parse_thread_tags returns no
+        // root_event_id, so fetch_conversation_context reaches the is_dm_turn branch.
+        let make_batch = |channel_id: Uuid| {
+            let keys = nostr::Keys::generate();
+            let event = nostr::EventBuilder::new(nostr::Kind::Custom(1), "msg")
+                .custom_created_at(nostr::Timestamp::from(1_700_000_000u64))
+                .sign_with_keys(&keys)
+                .expect("sign");
+            FlushBatch {
+                channel_id,
+                events: vec![crate::queue::BatchEvent {
+                    event,
+                    prompt_tag: "test".into(),
+                    received_at: std::time::Instant::now(),
+                }],
+                cancelled_events: vec![],
+                cancel_reason: None,
+            }
+        };
+
+        let ctx = PromptContext {
+            rest_client: rest,
+            context_message_limit: 10,
+            agent_keys,
+            ..make_prompt_context_no_owner()
+        };
+
+        // ── Case 1: is_dm_turn = true → must take the DM history path ────────
+        let channel_id = Uuid::from_u128(0x1001);
+        let result = fetch_conversation_context(&make_batch(channel_id), &ctx, true).await;
+
+        assert!(
+            matches!(result, Some(ConversationContext::Dm { .. })),
+            "is_dm_turn=true must return ConversationContext::Dm; got: {result:?}"
+        );
+        let dm_requests = requests.load(Ordering::SeqCst);
+        assert!(
+            dm_requests >= 1,
+            "is_dm_turn=true must issue at least one HTTP request to fetch DM history"
+        );
+
+        // ── Case 2: is_dm_turn = false → must skip DM fetch entirely ─────────
+        let requests_before = requests.load(Ordering::SeqCst);
+        let channel_id2 = Uuid::from_u128(0x1002);
+        let result = fetch_conversation_context(&make_batch(channel_id2), &ctx, false).await;
+
+        assert!(
+            result.is_none(),
+            "is_dm_turn=false on a non-thread turn must return None (no DM fetch); got: {result:?}"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            requests_before,
+            "is_dm_turn=false must not issue any HTTP request to the DM history endpoint"
+        );
+
+        server.abort();
+    }
 }
