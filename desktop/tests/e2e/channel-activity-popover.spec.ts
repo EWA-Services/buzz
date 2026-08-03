@@ -277,6 +277,12 @@ test.describe("channel activity hover preview", () => {
     await seedChannelActivity(page, { extraThreadCount: 5 });
     const popover = await openActivityPopover(page);
 
+    await waitForAnimations(page);
+    const enterScale = await popover.evaluate((element) =>
+      getComputedStyle(element).getPropertyValue("--tw-enter-scale"),
+    );
+    expect(enterScale).toBe("1");
+
     const heading = popover.getByRole("heading", {
       name: "Channel activity",
     });
