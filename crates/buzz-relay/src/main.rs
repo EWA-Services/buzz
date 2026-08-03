@@ -1230,7 +1230,7 @@ async fn serve(
         let hard_shutdown_abort = hard_shutdown.abort_handle();
         // Stop accepting first, then retain ownership of every delayed close
         // until its 1012 frame has been queued and its send loop cancelled.
-        let closed = drain_conn_manager.drain_all_jittered(drain_jitter_ms).await;
+        let closed = drain_conn_manager.drain_all(drain_jitter_ms).await;
         info!(
             connections = closed,
             jitter_ms = drain_jitter_ms,

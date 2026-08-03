@@ -334,41 +334,8 @@ impl ConnectionManager {
         closed
     }
 
-    /// Closes every live connection with a `1012 Service Restart` close frame.
-    ///
-    /// Called when graceful shutdown starts draining. Without this, upgraded
-    /// WebSocket connections outlive the axum listener drain: clients ride the
-    /// dying pod until the forced exit and then learn about the restart from a
-    /// TCP reset (or, on an abrupt kill, from up to 60s of stall-watchdog
-    /// silence). The explicit close frame tells them to reconnect immediately
-    /// — and that the disconnect is a restart, not a policy action.
-    ///
-    /// Uses the "queue frame on ctrl, then cancel" idiom (see
-    /// [`ConnectionManager::disconnect_pubkey`]): the send loop drains queued
-    /// control frames — including this close — before its cancel branch closes
-    /// the socket. Best-effort: a full control buffer still gets the close via
-    /// cancel, just without the restart code.
-    ///
-    /// Returns the number of connections signalled.
-    pub fn drain_all(&self) -> usize {
-        // Store-then-iterate pairs with register's insert-then-check: a
-        // registration that misses this iteration observes the flag and
-        // self-signals instead. The flag is sticky — drain is one-way.
-        self.draining.store(true, Ordering::SeqCst);
-        let frame = Self::restart_close_frame();
-        let mut closed = 0usize;
-        for entry in self.connections.iter() {
-            let _ = entry.ctrl_tx.try_send(frame.clone());
-            entry.cancel.cancel();
-            closed += 1;
-        }
-        closed
-    }
-
-    /// Staggered variant of [`Self::drain_all`]: closes every live connection
-    /// with the `1012 Service Restart` frame, but spreads the closes across
-    /// `[1, jitter_ms]` when jitter is enabled instead of firing them all in
-    /// one instant.
+    /// Closes every live connection with a `1012 Service Restart` frame,
+    /// spreading closes across `[1, jitter_ms]` when jitter is enabled.
     ///
     /// A pod under a rolling deploy can hold thousands of WebSocket sessions.
     /// Closing them simultaneously ([`Self::drain_all`]) makes every client
@@ -389,7 +356,7 @@ impl ConnectionManager {
     /// first await, preserving the previous all-at-once behavior.
     ///
     /// Returns the number of connections signalled.
-    pub async fn drain_all_jittered(&self, jitter_ms: u64) -> usize {
+    pub async fn drain_all(&self, jitter_ms: u64) -> usize {
         // Store-then-snapshot pairs with register's insert-then-check: either
         // the snapshot captures a registration, or it observes the sticky flag
         // and self-signals immediately.
@@ -1882,7 +1849,7 @@ mod tests {
             Uuid::from_u128(0xb),
         ));
 
-        let closed = mgr.drain_all();
+        let closed = mgr.drain_all(0).await;
 
         assert_eq!(closed, 2, "every connection is signalled, no tenant fence");
         assert!(cancel_a.is_cancelled(), "community-A session is cancelled");
@@ -1928,7 +1895,7 @@ mod tests {
             .try_send(WsMessage::Text("wedge".into()))
             .expect("fill control channel");
 
-        let closed = mgr.drain_all();
+        let closed = mgr.drain_all(0).await;
 
         assert_eq!(closed, 1);
         assert!(
@@ -1953,7 +1920,7 @@ mod tests {
         let mgr = ConnectionManager::new();
 
         // Drain with zero connections — sets the sticky flag.
-        assert_eq!(mgr.drain_all(), 0);
+        assert_eq!(mgr.drain_all(0).await, 0);
 
         // Late registration lands after the snapshot.
         let conn_id = Uuid::new_v4();
@@ -1989,9 +1956,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_all_jittered_zero_is_synchronous_drain_all() {
-        // jitter_ms == 0 must reproduce drain_all exactly: synchronous close,
-        // no task spawns, frame already queued when the call returns.
+    async fn drain_all_zero_is_immediate() {
+        // jitter_ms == 0 preserves the original all-at-once behavior: the
+        // frame is queued and cancellation fires when the future resolves.
         let mgr = Arc::new(ConnectionManager::new());
         let conn_id = Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(8);
@@ -2008,7 +1975,7 @@ mod tests {
             3,
         );
 
-        let closed = mgr.drain_all_jittered(0).await;
+        let closed = mgr.drain_all(0).await;
 
         assert_eq!(closed, 1);
         assert!(cancel.is_cancelled(), "zero jitter cancels synchronously");
@@ -2019,15 +1986,14 @@ mod tests {
                     .expect("close frame delivered synchronously"),
                 WsMessage::Close(Some(_))
             ),
-            "the restart close is queued before drain_all_jittered(0) returns"
+            "the restart close is queued before drain_all(0) returns"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn drain_all_jittered_defers_close_until_within_jitter_window() {
-        // With jitter, the close must NOT be queued synchronously: it fires
-        // from a spawned task after a delay bounded by the jitter window. But
-        // the sticky drain flag is still set immediately, so a late
+    async fn drain_all_defers_close_until_within_jitter_window() {
+        // With jitter, the close is deferred within the owned drain future.
+        // The sticky drain flag is still set immediately, so a late
         // registration self-signals with no delay.
         let mgr = Arc::new(ConnectionManager::new());
         let conn_id = Uuid::new_v4();
@@ -2048,7 +2014,7 @@ mod tests {
         let jitter_ms = 20_000u64;
         // Poll the owned drain through its first await. Dropping this future
         // would drop the timers too; the shutdown path must retain and await it.
-        let drain = mgr.drain_all_jittered(jitter_ms);
+        let drain = mgr.drain_all(jitter_ms);
         tokio::pin!(drain);
         assert!(
             futures_util::poll!(&mut drain).is_pending(),
