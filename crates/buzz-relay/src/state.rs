@@ -32,10 +32,13 @@ use deadpool_redis;
 
 use crate::audio::AudioRoomManager;
 use crate::config::Config;
-use crate::connection::ConnectionSubscriptions;
+use crate::connection::{ConnectionSubscriptions, RestartClose};
 use crate::subscription::SubscriptionRegistry;
 
 pub(crate) type ScopedPubkeyKey = (CommunityId, [u8; 32]);
+
+/// Leaves headroom under the process-wide drain deadline for a stalled writer.
+const RESTART_CLOSE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 type SlidingWindowCounter = (u32, Instant);
 type ScopedRateLimiter = DashMap<ScopedPubkeyKey, SlidingWindowCounter>;
 
@@ -46,6 +49,7 @@ struct ConnEntry {
     /// the send loop. Used to deliver a ban-disconnect frame that must reach
     /// the client before the socket is closed (see [`ConnectionManager::disconnect_pubkey`]).
     ctrl_tx: mpsc::Sender<WsMessage>,
+    restart_tx: Option<mpsc::Sender<RestartClose>>,
     cancel: CancellationToken,
     /// Community resolved from the connection host at handshake. This is the
     /// receiver-side tenant label fan-out must compare against the event label.
@@ -203,17 +207,19 @@ impl ConnectionManager {
     // Each argument is a distinct per-connection attribute stored verbatim in
     // `ConnEntry`; a params struct would only relocate the same fields.
     #[allow(clippy::too_many_arguments)]
-    pub fn register(
+    pub(crate) fn register(
         &self,
         conn_id: Uuid,
         tx: mpsc::Sender<WsMessage>,
         ctrl_tx: mpsc::Sender<WsMessage>,
+        restart_tx: Option<mpsc::Sender<RestartClose>>,
         cancel: CancellationToken,
         community_id: CommunityId,
         backpressure_count: Arc<AtomicU8>,
         subscriptions: ConnectionSubscriptions,
         grace_limit: u8,
     ) {
+        let drain_restart_tx = restart_tx.clone();
         let drain_ctrl_tx = ctrl_tx.clone();
         let drain_cancel = cancel.clone();
         self.connections.insert(
@@ -221,6 +227,7 @@ impl ConnectionManager {
             ConnEntry {
                 tx,
                 ctrl_tx,
+                restart_tx,
                 cancel,
                 community_id,
                 backpressure_count,
@@ -234,8 +241,15 @@ impl ConnectionManager {
         // A registration that raced past the snapshot self-signals here, so
         // no connection can outlive graceful shutdown unclosed.
         if self.draining.load(Ordering::SeqCst) {
-            let _ = drain_ctrl_tx.try_send(Self::restart_close_frame());
-            drain_cancel.cancel();
+            if let Some(restart_tx) = drain_restart_tx {
+                let (flushed, _acknowledgement) = tokio::sync::oneshot::channel();
+                if restart_tx.try_send(RestartClose { flushed }).is_err() {
+                    drain_cancel.cancel();
+                }
+            } else {
+                let _ = drain_ctrl_tx.try_send(Self::restart_close_frame());
+                drain_cancel.cancel();
+            }
         }
     }
 
@@ -361,14 +375,13 @@ impl ConnectionManager {
         // the snapshot captures a registration, or it observes the sticky flag
         // and self-signals immediately.
         self.draining.store(true, Ordering::SeqCst);
-        let frame = Self::restart_close_frame();
         let pending: Vec<_> = self
             .connections
             .iter()
             .map(|entry| {
                 let ctrl_tx = entry.ctrl_tx.clone();
+                let restart_tx = entry.restart_tx.clone();
                 let cancel = entry.cancel.clone();
-                let frame = frame.clone();
                 let delay_ms = if jitter_ms == 0 {
                     0
                 } else {
@@ -378,8 +391,26 @@ impl ConnectionManager {
                     if delay_ms > 0 {
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
-                    let _ = ctrl_tx.try_send(frame);
-                    cancel.cancel();
+                    let Some(restart_tx) = restart_tx else {
+                        // Unit-only registrations do not own a writer task.
+                        let _ = ctrl_tx.try_send(Self::restart_close_frame());
+                        cancel.cancel();
+                        return;
+                    };
+                    let (flushed_tx, flushed_rx) = tokio::sync::oneshot::channel();
+                    if restart_tx
+                        .try_send(RestartClose {
+                            flushed: flushed_tx,
+                        })
+                        .is_err()
+                    {
+                        cancel.cancel();
+                        return;
+                    }
+                    let flushed = tokio::time::timeout(RESTART_CLOSE_ACK_TIMEOUT, flushed_rx).await;
+                    if !matches!(flushed, Ok(Ok(true))) {
+                        cancel.cancel();
+                    }
                 }
             })
             .collect();
@@ -1270,6 +1301,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx,
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::clone(&bp),
@@ -1395,6 +1427,7 @@ mod tests {
             conn_id,
             tx,
             conn.ctrl_tx.clone(),
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::clone(&bp),
@@ -1441,6 +1474,7 @@ mod tests {
             conn_a,
             tx_a,
             ctrl_tx_a,
+            None,
             CancellationToken::new(),
             community_a,
             Arc::new(AtomicU8::new(0)),
@@ -1451,6 +1485,7 @@ mod tests {
             conn_b,
             tx_b,
             ctrl_tx_b,
+            None,
             CancellationToken::new(),
             community_b,
             Arc::new(AtomicU8::new(0)),
@@ -1487,6 +1522,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx,
+            None,
             cancel,
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             bp,
@@ -1789,6 +1825,7 @@ mod tests {
                 conn_id,
                 tx,
                 ctrl_tx,
+                None,
                 cancel.clone(),
                 community,
                 Arc::new(AtomicU8::new(0)),
@@ -1818,6 +1855,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drain_all_waits_for_writer_acknowledgement_without_cancelling() {
+        let mgr = Arc::new(ConnectionManager::new());
+        let conn_id = Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(8);
+        let (ctrl_tx, _ctrl_rx) = mpsc::channel(8);
+        let (restart_tx, mut restart_rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        mgr.register(
+            conn_id,
+            tx,
+            ctrl_tx,
+            Some(restart_tx),
+            cancel.clone(),
+            buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
+            Arc::new(AtomicU8::new(0)),
+            Arc::new(Mutex::new(HashMap::new())),
+            3,
+        );
+
+        let drain_mgr = Arc::clone(&mgr);
+        let drain = tokio::spawn(async move { drain_mgr.drain_all(0).await });
+        let restart = restart_rx.recv().await.expect("restart command delivered");
+        assert!(!drain.is_finished(), "drain waits for the writer flush");
+        restart.flushed.send(true).expect("acknowledge flush");
+
+        assert_eq!(drain.await.expect("drain task"), 1);
+        assert!(
+            !cancel.is_cancelled(),
+            "successful flush does not use cancellation fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_all_cancels_when_restart_channel_is_full_or_closed() {
+        for keep_receiver in [true, false] {
+            let mgr = ConnectionManager::new();
+            let conn_id = Uuid::new_v4();
+            let (tx, _rx) = mpsc::channel(8);
+            let (ctrl_tx, _ctrl_rx) = mpsc::channel(8);
+            let (restart_tx, restart_rx) = mpsc::channel(1);
+            let (pending_tx, _pending_rx) = tokio::sync::oneshot::channel();
+            if keep_receiver {
+                restart_tx
+                    .try_send(RestartClose {
+                        flushed: pending_tx,
+                    })
+                    .expect("fill restart channel");
+            } else {
+                drop(restart_rx);
+            }
+            let cancel = CancellationToken::new();
+            mgr.register(
+                conn_id,
+                tx,
+                ctrl_tx,
+                Some(restart_tx),
+                cancel.clone(),
+                buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
+                Arc::new(AtomicU8::new(0)),
+                Arc::new(Mutex::new(HashMap::new())),
+                3,
+            );
+
+            assert_eq!(mgr.drain_all(0).await, 1);
+            assert!(
+                cancel.is_cancelled(),
+                "unavailable writer cancels as fallback"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn drain_all_sends_restart_close_and_cancels_every_conn() {
         // Graceful shutdown must tell every live client to reconnect — across
         // all communities — with a 1012 restart close frame queued ahead of
@@ -1833,6 +1942,7 @@ mod tests {
                 conn_id,
                 tx,
                 ctrl_tx,
+                None,
                 cancel.clone(),
                 community,
                 Arc::new(AtomicU8::new(0)),
@@ -1884,6 +1994,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx.clone(),
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::new(AtomicU8::new(0)),
@@ -1931,6 +2042,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx,
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::new(AtomicU8::new(0)),
@@ -1968,6 +2080,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx,
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::new(AtomicU8::new(0)),
@@ -2004,6 +2117,7 @@ mod tests {
             conn_id,
             tx,
             ctrl_tx,
+            None,
             cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::new(AtomicU8::new(0)),
@@ -2041,6 +2155,7 @@ mod tests {
             late_id,
             late_tx,
             late_ctrl_tx,
+            None,
             late_cancel.clone(),
             buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
             Arc::new(AtomicU8::new(0)),
