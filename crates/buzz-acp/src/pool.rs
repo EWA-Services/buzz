@@ -97,13 +97,6 @@ pub struct SessionState {
     /// channel_id → rendered NIP-AE core prompt section, populated once at
     /// session creation per Tyler's spec (no mid-session refresh).
     pub core_sections: HashMap<Uuid, String>,
-    /// channel_id → rendered `[Channel Canvas]` metadata section.
-    ///
-    /// Populated once before session creation (same lifecycle as `core_sections`).
-    /// Absent when the channel has no canvas, the canvas content is blank, or the
-    /// fetch fails — all fail open. Cleared on session invalidation alongside
-    /// `core_sections` so the next session picks up any canvas change.
-    pub canvas_sections: HashMap<Uuid, String>,
 }
 
 impl SessionState {
@@ -125,7 +118,6 @@ impl SessionState {
     pub fn invalidate_channel(&mut self, channel_id: &Uuid) -> bool {
         self.turn_counts.remove(channel_id);
         self.core_sections.remove(channel_id);
-        self.canvas_sections.remove(channel_id);
         self.sessions.remove(channel_id).is_some()
     }
 
@@ -136,7 +128,6 @@ impl SessionState {
         self.heartbeat_session = None;
         self.heartbeat_turn_count = 0;
         self.core_sections.clear();
-        self.canvas_sections.clear();
     }
 
     #[cfg(test)]
@@ -144,7 +135,81 @@ impl SessionState {
         self.sessions.contains_key(channel_id)
             || self.turn_counts.contains_key(channel_id)
             || self.core_sections.contains_key(channel_id)
-            || self.canvas_sections.contains_key(channel_id)
+    }
+}
+
+/// Tri-state result of a per-turn canvas fetch.
+///
+/// - `Present` — a canvas event was found; carry the pointer into `[Context]`.
+/// - `Absent`  — relay confirms no canvas (or a blank/deleted canvas). Clears
+///               any previously cached pointer for the channel.
+/// - `Failed`  — transport timeout, REST error, or parse failure. The caller
+///               must serve the last-known cached value (stale-on-failure).
+#[derive(Debug)]
+pub enum CanvasFetchResult {
+    Present(crate::queue::CanvasPointer),
+    Absent,
+    Failed,
+}
+
+/// Process-lifetime per-channel canvas revision cache.
+///
+/// Keyed by channel `Uuid`. Values:
+/// - `Some(pointer)` — last known present canvas revision.
+/// - `None`          — confirmed absent (blank/deleted); cleared on `Absent` fetch.
+/// - No entry        — never fetched for this channel.
+///
+/// Independent of `SessionState`: cache survives ACP session rotation/invalidation
+/// so the canvas pointer is never lost when a session is recycled.
+#[derive(Clone, Default)]
+pub struct CanvasRevisionCache {
+    inner: Arc<std::sync::RwLock<HashMap<Uuid, Option<crate::queue::CanvasPointer>>>>,
+}
+
+impl CanvasRevisionCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Look up the cached pointer for `channel_id`.
+    ///
+    /// Returns `None` when there is no entry (never fetched) or the entry is
+    /// confirmed absent. Callers that need to distinguish "never fetched" from
+    /// "confirmed absent" should use `get_raw`.
+    pub fn get(&self, channel_id: &Uuid) -> Option<crate::queue::CanvasPointer> {
+        self.inner
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(channel_id)
+            .and_then(|v| v.clone())
+    }
+
+    /// Resolve the canvas pointer for the current turn, updating the cache.
+    ///
+    /// - `Present(p)` → cache `Some(p)`, return `Some(p)`.
+    /// - `Absent`     → cache `None`, return `None`.
+    /// - `Failed`     → cache unchanged; return last-known value or `None` on
+    ///                  first-fetch failure.
+    pub fn resolve_for_turn(
+        &self,
+        channel_id: &Uuid,
+        result: CanvasFetchResult,
+    ) -> Option<crate::queue::CanvasPointer> {
+        let mut map = self.inner.write().unwrap_or_else(|p| p.into_inner());
+        match result {
+            CanvasFetchResult::Present(p) => {
+                map.insert(*channel_id, Some(p.clone()));
+                Some(p)
+            }
+            CanvasFetchResult::Absent => {
+                map.insert(*channel_id, None);
+                None
+            }
+            CanvasFetchResult::Failed => {
+                // Serve stale; do not update the entry.
+                map.get(channel_id).and_then(|v| v.clone())
+            }
+        }
     }
 }
 
@@ -459,14 +524,43 @@ pub enum PromptOutcome {
 ///
 /// Built once from `Config` at startup. Avoids cloning the full config
 /// into every task.
+
+/// Per-entry TTL for channel metadata cache entries (~5 minutes).
+const CHANNEL_INFO_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Backoff applied to `next_refresh_at` after a failed TTL refresh.
+///
+/// On failure the entry is served stale; the next consumer will retry after
+/// this interval rather than immediately re-driving the full retry sequence.
+const CHANNEL_INFO_REFRESH_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A cached channel metadata entry with a TTL-based refresh deadline.
+#[derive(Clone, Debug)]
+struct CachedChannelInfo {
+    info: PromptChannelInfo,
+    /// Absolute instant after which a background refresh should be triggered.
+    /// Consumers continue serving the cached `info` while the refresh runs.
+    refresh_after: tokio::time::Instant,
+    /// Absolute instant before which background refreshes should be suppressed
+    /// (set after a failed refresh to prevent retry storms on degraded relays).
+    next_refresh_at: tokio::time::Instant,
+}
+
 /// Shared channel-metadata resolver for startup-known and dynamically joined channels.
 ///
 /// Successful lazy lookups are cached for every consumer (author gate, prompt
 /// context, canvas, and setup mode). Unknown metadata is never cached as a
 /// non-DM: callers can fail closed and a later event retries resolution.
+///
+/// Each entry carries a ~5-minute TTL (`CHANNEL_INFO_TTL`). On expiry the
+/// current value is served immediately (stale-while-revalidate) and a
+/// background refresh is spawned. On refresh failure the `next_refresh_at`
+/// timestamp is advanced by `CHANNEL_INFO_REFRESH_BACKOFF` to throttle retries
+/// on degraded relays — preventing repeated ~6.5-second retry sequences on the
+/// DM author gate path.
 #[derive(Debug, Clone)]
 pub struct ChannelInfoResolver {
-    cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<Uuid, PromptChannelInfo>>>,
+    cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<Uuid, CachedChannelInfo>>>,
     rest_client: RestClient,
 }
 
@@ -475,14 +569,20 @@ impl ChannelInfoResolver {
         startup: std::collections::HashMap<Uuid, ChannelInfo>,
         rest_client: RestClient,
     ) -> Self {
+        let now = tokio::time::Instant::now();
         let cache = startup
             .into_iter()
             .filter_map(|(id, info)| {
                 (info.channel_type != "unknown").then_some((
                     id,
-                    PromptChannelInfo {
-                        name: info.name,
-                        channel_type: info.channel_type,
+                    CachedChannelInfo {
+                        info: PromptChannelInfo {
+                            name: info.name,
+                            channel_type: info.channel_type,
+                            description: info.description,
+                        },
+                        refresh_after: now + CHANNEL_INFO_TTL,
+                        next_refresh_at: now,
                     },
                 ))
             })
@@ -494,20 +594,72 @@ impl ChannelInfoResolver {
     }
 
     pub async fn resolve(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
-        if let Some(info) = self
+        let now = tokio::time::Instant::now();
+
+        // Fast path: return cached entry; spawn a background refresh if expired.
+        if let Some(cached) = self
             .cache
             .read()
             .ok()
-            .and_then(|cache| cache.get(&channel_id).cloned())
+            .and_then(|c| c.get(&channel_id).cloned())
         {
-            return Some(info);
+            if now >= cached.refresh_after && now >= cached.next_refresh_at {
+                // Stale — spawn background refresh; serve stale immediately.
+                let resolver = self.clone();
+                tokio::spawn(async move {
+                    resolver.background_refresh(channel_id).await;
+                });
+            }
+            return Some(cached.info);
         }
 
+        // Slow path: uncached — fetch synchronously (one logical sequence = two HTTP
+        // attempts per fetch_with_retry, exactly as before the TTL addition).
         let info = fetch_channel_info(channel_id, &self.rest_client).await?;
+        let now = tokio::time::Instant::now();
         if let Ok(mut cache) = self.cache.write() {
-            cache.insert(channel_id, info.clone());
+            cache.insert(
+                channel_id,
+                CachedChannelInfo {
+                    info: info.clone(),
+                    refresh_after: now + CHANNEL_INFO_TTL,
+                    next_refresh_at: now,
+                },
+            );
         }
         Some(info)
+    }
+
+    /// Background TTL refresh: fetch fresh metadata and update the cache.
+    ///
+    /// On failure: advance `next_refresh_at` by `CHANNEL_INFO_REFRESH_BACKOFF`
+    /// so the next consumer does not immediately re-trigger the retry sequence.
+    /// On success: reset the TTL window.
+    async fn background_refresh(&self, channel_id: Uuid) {
+        match fetch_channel_info(channel_id, &self.rest_client).await {
+            Some(info) => {
+                let now = tokio::time::Instant::now();
+                if let Ok(mut cache) = self.cache.write() {
+                    cache.insert(
+                        channel_id,
+                        CachedChannelInfo {
+                            info,
+                            refresh_after: now + CHANNEL_INFO_TTL,
+                            next_refresh_at: now,
+                        },
+                    );
+                }
+            }
+            None => {
+                // Fetch failed — serve stale; suppress retries for backoff duration.
+                let now = tokio::time::Instant::now();
+                if let Ok(mut cache) = self.cache.write() {
+                    if let Some(entry) = cache.get_mut(&channel_id) {
+                        entry.next_refresh_at = now + CHANNEL_INFO_REFRESH_BACKOFF;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -564,6 +716,11 @@ pub struct PromptContext {
     /// the desktop keys per (agent, relay) pair, e.g. `session_config_captured`,
     /// mirroring the `managed_agent_runtime_lifecycle` frames.
     pub relay_url: String,
+    /// Process-lifetime per-channel canvas revision cache.
+    ///
+    /// Keyed by channel UUID; stores the last-known canvas pointer or confirmed
+    /// absence. Independent of `SessionState` — survives ACP session rotation.
+    pub canvas_cache: CanvasRevisionCache,
 }
 
 impl AgentPool {
@@ -838,17 +995,8 @@ const PERMISSION_MODE_TIMEOUT: Duration = Duration::from_secs(5);
 /// an identifying name must treat it as absent.
 const UNKNOWN_CHANNEL_NAME: &str = "unknown";
 
-/// Channel-derived inputs for a new session — `(is_dm, title_channel)` — from
+/// Channel-derived inputs for a new session — `title_channel` — from
 /// **one** metadata resolve.
-///
-/// Both new-session consumers need the same lookup: the canvas block skips DMs
-/// (and fails closed when the channel type can't be determined), and the
-/// session title is qualified with the channel name. Resolving once is
-/// load-bearing rather than tidy: [`ChannelInfoResolver`] caches only `Some`,
-/// so two calls against an unresolvable channel pay the whole
-/// [`fetch_channel_info`] retry sequence twice — two `CONTEXT_FETCH_TIMEOUT`
-/// attempts plus `CONTEXT_FETCH_RETRY_DELAY` each, in front of `session/new`,
-/// precisely when the relay is already degraded.
 ///
 /// `title_channel` is `None` whenever the channel can't usefully identify the
 /// session: an unresolved channel, a DM (no meaningful name), or the literal
@@ -864,17 +1012,6 @@ const UNKNOWN_CHANNEL_NAME: &str = "unknown";
 /// resolver's cached entry, so a renamed channel keeps its old suffix until the
 /// process restarts. An agent rename lands on the next spawn (the desktop
 /// restart badge covers it — see `spawn_config_hash`).
-async fn resolve_new_session_channel_context(
-    channel_info: &ChannelInfoResolver,
-    channel_id: Uuid,
-) -> (bool, Option<String>) {
-    let Some(info) = channel_info.resolve(channel_id).await else {
-        return (true, None);
-    };
-    let is_dm = info.channel_type == "dm";
-    let title_channel = (!is_dm && info.name != UNKNOWN_CHANNEL_NAME).then_some(info.name);
-    (is_dm, title_channel)
-}
 
 /// Create a new ACP session via `session_new_full()`, populate model capabilities
 /// on the agent (first session only), and apply `desired_model` if set.
@@ -886,25 +1023,21 @@ async fn create_session_and_apply_model(
     agent: &mut OwnedAgent,
     ctx: &PromptContext,
     agent_core: Option<&str>,
-    agent_canvas: Option<&str>,
     channel_name: Option<&str>,
 ) -> Result<String, AcpError> {
-    // Build base_prompt + system_prompt + agent core + canvas metadata into a
-    // single prompt. Standard protocol-v2 agents receive it in `session/new`;
+    // Build base_prompt + system_prompt + agent core into a single prompt.
+    // Standard protocol-v2 agents receive it in `session/new`;
     // Goose receives it through the custom request below. Legacy agents receive
     // the same content as user-message sections via `format_prompt`. Core carries
-    // its own `[Agent Memory — core]` header, and canvas carries its own
-    // `[Channel Canvas]` header; both are appended with a blank-line separator.
+    // its own `[Agent Memory — core]` header and is appended with a blank-line
+    // separator.
     let is_goose = agent.agent_name == "goose";
-    let combined_system_prompt = with_canvas(
-        with_core(
-            with_team(
-                framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
-                ctx.team_instructions.as_deref(),
-            ),
-            agent_core,
+    let combined_system_prompt = with_core(
+        with_team(
+            framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+            ctx.team_instructions.as_deref(),
         ),
-        agent_canvas,
+        agent_core,
     );
 
     let session_title = ctx
@@ -1189,24 +1322,6 @@ pub(crate) fn prepend_base_for_legacy(
     }
 }
 
-/// Prepend the `[Channel Canvas]` section to the legacy initial-message body.
-///
-/// Protocol-v2 agents already receive the canvas in `systemPrompt`; only
-/// legacy (protocol_version < 2) agents need it injected here so it arrives
-/// before the first prompt — the same "every turn" semantics as per-turn core.
-/// Heartbeats never have an initial_message, so the caller is responsible for
-/// not passing a canvas when `source` is `Heartbeat`.
-pub(crate) fn prepend_canvas_for_legacy(
-    protocol_version: u32,
-    agent_canvas: Option<&str>,
-    body: &str,
-) -> String {
-    match agent_canvas {
-        Some(canvas) if protocol_version < 2 => format!("{canvas}\n\n{body}"),
-        _ => body.to_string(),
-    }
-}
-
 /// Frame the `session/new` `systemPrompt` so each present prompt carries its own
 /// header, keeping the base/persona boundary recoverable downstream.
 ///
@@ -1290,20 +1405,6 @@ fn with_core(framed: Option<String>, core: Option<&str>) -> Option<String> {
         (Some(framed), Some(core)) => Some(format!("{framed}\n\n{core}")),
         (Some(framed), None) => Some(framed),
         (None, Some(core)) => Some(core.to_string()),
-        (None, None) => None,
-    }
-}
-
-/// Append the `[Channel Canvas]` metadata section onto the accumulated system prompt.
-///
-/// The canvas section already carries its `[Channel Canvas]` header (from
-/// `render_canvas_section`), so it is joined with a blank-line separator.
-/// Either side may be absent.
-fn with_canvas(prompt: Option<String>, canvas: Option<&str>) -> Option<String> {
-    match (prompt, canvas) {
-        (Some(prompt), Some(canvas)) => Some(format!("{prompt}\n\n{canvas}")),
-        (Some(prompt), None) => Some(prompt),
-        (None, Some(canvas)) => Some(canvas.to_string()),
         (None, None) => None,
     }
 }
@@ -1503,56 +1604,51 @@ pub async fn run_prompt_task(
         }
     }
 
-    // Canvas metadata fetch — same lifecycle as core: once per new channel session,
-    // never for heartbeats, cached until session invalidation.
-    //
-    // DM check: use startup channel_info first; lazy-fetch only when missing.
-    // A confirmed DM never receives a canvas section. If the channel type cannot
-    // be determined (metadata absent and lazy fetch fails/unknown), skip the canvas
-    // rather than assuming non-DM — failing closed on DM ambiguity is safer.
-    //
-    // I3 lifecycle: hold the fetched section in a local `pending_canvas` and
-    // commit it to `canvas_sections` only after session creation succeeds. This
-    // prevents a stale revision A surviving a failed create and being re-used by
-    // the next attempt after the canvas was cleared.
-    let mut pending_canvas: Option<(Uuid, String)> = None;
-    // Channel name for the session title, from the same single resolve the
-    // canvas DM check uses — see `resolve_new_session_channel_context`.
+    // Channel metadata — resolve once per turn for title (new sessions only) and
+    // the per-turn canvas fetch. DM check fails closed: a channel whose type
+    // cannot be determined is treated as a DM.
     let mut title_channel: Option<String> = None;
     if let PromptSource::Channel(cid) = &source {
         let is_new_channel_session = !agent.state.sessions.contains_key(cid);
-        let needs_canvas = is_new_channel_session && !agent.state.canvas_sections.contains_key(cid);
         let needs_title = is_new_channel_session && ctx.session_title.is_some();
-        if needs_canvas || needs_title {
-            let (is_dm, resolved_channel) =
-                resolve_new_session_channel_context(&ctx.channel_info, *cid).await;
-            title_channel = resolved_channel;
-            // A confirmed DM never receives a canvas section; an undeterminable
-            // channel type fails closed as a DM for the same reason.
-            if needs_canvas && !is_dm {
-                if let Some(section) = fetch_canvas_section(*cid, &ctx.rest_client).await {
-                    pending_canvas = Some((*cid, section));
-                }
+        if needs_title {
+            if let Some(info) = ctx.channel_info.resolve(*cid).await {
+                let is_dm = info.channel_type == "dm";
+                title_channel = (!is_dm && info.name != UNKNOWN_CHANNEL_NAME).then_some(info.name);
             }
         }
     }
+
+    // Per-turn canvas fetch: resolve for the current turn and update the
+    // process-lifetime cache. Canvas is only fetched for channel turns (not
+    // heartbeats). DMs never receive canvas material — fail closed when channel
+    // type is unknown.
+    //
+    // A4: single-attempt, 3 s timeout, stale-on-failure. Runs before session
+    // creation so the pointer is available for initial_message.
+    let canvas_pointer: Option<crate::queue::CanvasPointer> = match &source {
+        PromptSource::Channel(cid) => {
+            // Determine DM status before fetching canvas.
+            let is_dm = ctx
+                .channel_info
+                .resolve(*cid)
+                .await
+                .map(|info| info.channel_type == "dm")
+                .unwrap_or(true); // fail closed on unknown
+            if is_dm {
+                None
+            } else {
+                let result = fetch_canvas_pointer(*cid, &ctx.rest_client).await;
+                ctx.canvas_cache.resolve_for_turn(cid, result)
+            }
+        }
+        PromptSource::Heartbeat => None,
+    };
 
     // The core section to fold into the system prompt for this turn's session.
     // Channel-scoped; heartbeats carry no owner core.
     let agent_core: Option<String> = match &source {
         PromptSource::Channel(cid) => agent.state.core_sections.get(cid).cloned(),
-        PromptSource::Heartbeat => None,
-    };
-
-    // The canvas metadata section — channel-scoped, absent for heartbeats/DMs.
-    // Prefer the committed cache; fall back to pending (for new sessions being created now).
-    let agent_canvas: Option<String> = match &source {
-        PromptSource::Channel(cid) => agent
-            .state
-            .canvas_sections
-            .get(cid)
-            .cloned()
-            .or_else(|| pending_canvas.as_ref().map(|(_, s)| s.clone())),
         PromptSource::Heartbeat => None,
     };
 
@@ -1569,7 +1665,6 @@ pub async fn run_prompt_task(
                     &mut agent,
                     &ctx,
                     agent_core.as_deref(),
-                    agent_canvas.as_deref(),
                     title_channel.as_deref(),
                 )
                 .await
@@ -1580,10 +1675,6 @@ pub async fn run_prompt_task(
                             "created session {sid} for channel {cid}"
                         );
                         agent.state.sessions.insert(*cid, sid.clone());
-                        // Commit canvas only after session creation succeeds (I3).
-                        if let Some((pending_cid, section)) = pending_canvas.take() {
-                            agent.state.canvas_sections.insert(pending_cid, section);
-                        }
                         (sid, true)
                     }
                     Err(AcpError::AgentExited) => {
@@ -1618,7 +1709,7 @@ pub async fn run_prompt_task(
             if let Some(sid) = &agent.state.heartbeat_session {
                 (sid.clone(), false)
             } else {
-                match create_session_and_apply_model(&mut agent, &ctx, None, None, None).await {
+                match create_session_and_apply_model(&mut agent, &ctx, None, None).await {
                     Ok(sid) => {
                         tracing::info!(
                             target: "pool::session",
@@ -1679,12 +1770,12 @@ pub async fn run_prompt_task(
                 target: "pool::session",
                 "sending initial_message to session {session_id} for channel {cid}"
             );
-            // For agents with systemPrompt support (protocol_version >= 2),
-            // base_prompt is delivered via the system role in session/new.
-            // Legacy agents receive it via [Base] in the user message instead.
-            // Canvas is also injected here for legacy agents: protocol-v2 agents
-            // already have it in systemPrompt; legacy agents need it before the
-            // first prompt, matching the "every turn" per-turn delivery semantics.
+            // Build the initial_message content. Base prompt is prepended for
+            // legacy agents (protocol < 2) in the user message; protocol-v2
+            // agents already have it in systemPrompt.
+            //
+            // Both modern and legacy agents receive the channel [Context] block
+            // (A2 — canvas awareness before the first prompt).
             let init_msg = prepend_base_for_legacy(
                 if agent.has_system_prompt_support() {
                     2
@@ -1694,15 +1785,29 @@ pub async fn run_prompt_task(
                 ctx.base_prompt,
                 initial_msg,
             );
-            let init_msg = prepend_canvas_for_legacy(
-                if agent.has_system_prompt_support() {
-                    2
-                } else {
-                    1
-                },
-                agent_canvas.as_deref(),
-                &init_msg,
-            );
+            // Prepend [Context] block (description + canvas pointer) to initial_message.
+            let init_msg = {
+                let channel_info = ctx.channel_info.resolve(*cid).await;
+                let mut ctx_block = String::from("[Context]\nScope: channel");
+                ctx_block.push_str(&format!(
+                    "\nChannel: {} (#{})",
+                    channel_info
+                        .as_ref()
+                        .map(|i| i.name.as_str())
+                        .unwrap_or("unknown"),
+                    cid
+                ));
+                crate::queue::append_description_for_initial_message(
+                    &mut ctx_block,
+                    channel_info.as_ref(),
+                );
+                crate::queue::append_canvas_pointer_for_initial_message(
+                    &mut ctx_block,
+                    canvas_pointer.as_ref(),
+                    &cid.to_string(),
+                );
+                format!("{ctx_block}\n\n{init_msg}")
+            };
             let init_result = agent
                 .acp
                 .session_prompt_with_idle_timeout(
@@ -1874,7 +1979,7 @@ pub async fn run_prompt_task(
                 base_prompt: ctx.base_prompt,
                 system_prompt: ctx.system_prompt.as_deref(),
                 team_instructions: ctx.team_instructions.as_deref(),
-                agent_canvas: agent_canvas.as_deref(),
+                canvas_pointer: canvas_pointer.as_ref(),
             },
         )
     } else {
@@ -2366,17 +2471,25 @@ pub(crate) async fn fetch_channel_info(
                 let ev = events.first()?;
                 let tags = ev.get("tags")?.as_array()?;
                 let mut name = None;
+                let mut description = None;
                 for tag in tags {
                     if let Some(arr) = tag.as_array() {
-                        if arr.first().and_then(|v| v.as_str()) == Some("name") {
-                            name = arr.get(1).and_then(|v| v.as_str());
+                        match arr.first().and_then(|v| v.as_str()) {
+                            Some("name") => name = arr.get(1).and_then(|v| v.as_str()),
+                            Some("about") => description = arr.get(1).and_then(|v| v.as_str()),
+                            _ => {}
                         }
                     }
                 }
                 let channel_type = crate::relay::channel_type_from_tags(tags);
+                let description = description
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 Some(PromptChannelInfo {
                     name: name.unwrap_or(UNKNOWN_CHANNEL_NAME).to_string(),
                     channel_type,
+                    description,
                 })
             }
             Ok(Err(e)) => {
@@ -2398,20 +2511,17 @@ pub(crate) async fn fetch_channel_info(
     .await
 }
 
-/// Fetch the latest canvas event for `channel_id` and return a rendered
-/// `[Channel Canvas]` metadata section, or `None` if absent/blank/error.
+/// Fetch the latest canvas event for `channel_id` and return a `CanvasFetchResult`.
 ///
-/// Failure modes (all fail open — no crash, no block):
-/// * relay returns no event → `None`
-/// * latest event's content is blank → `None` (cleared canvas; older revisions
-///   are NOT resurrected)
-/// * malformed JSON array, missing fields, bad event ID, bad timestamp →
-///   logged at `warn`; returns `None`
-/// * REST error or timeout → returns `None`
+/// - `Present(pointer)` — a valid, non-blank canvas event was found.
+/// - `Absent`           — relay confirmed no event, or the latest event has blank content
+///                        (cleared canvas); older revisions are NOT resurrected.
+/// - `Failed`           — transport timeout, REST error, or parse/verification error.
+///                        Callers must serve stale on `Failed`.
 ///
-/// Called at most once per new channel session; the result is cached in
-/// `SessionState::canvas_sections` and cleared on session invalidation.
-async fn fetch_canvas_section(channel_id: Uuid, rest: &RestClient) -> Option<String> {
+/// Single-attempt with a 3-second timeout — never wrapped in `fetch_with_retry`.
+/// Accepted latency bound: at most +3 s per turn on a degraded relay.
+async fn fetch_canvas_pointer(channel_id: Uuid, rest: &RestClient) -> CanvasFetchResult {
     use nostr::{Alphabet, SingleLetterTag};
 
     let h_tag = SingleLetterTag::lowercase(Alphabet::H);
@@ -2421,6 +2531,7 @@ async fn fetch_canvas_section(channel_id: Uuid, rest: &RestClient) -> Option<Str
         .limit(1);
 
     const CANVAS_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
     let json = match tokio::time::timeout(
         CANVAS_FETCH_TIMEOUT,
         rest.query(std::slice::from_ref(&filter)),
@@ -2432,18 +2543,18 @@ async fn fetch_canvas_section(channel_id: Uuid, rest: &RestClient) -> Option<Str
             tracing::warn!(
                 target: "canvas::fetch",
                 channel = %channel_id,
-                "canvas query failed: {e} — emitting no section"
+                "canvas query failed: {e} — serving stale"
             );
-            return None;
+            return CanvasFetchResult::Failed;
         }
         Err(_) => {
             tracing::warn!(
                 target: "canvas::fetch",
                 channel = %channel_id,
                 timeout_ms = CANVAS_FETCH_TIMEOUT.as_millis() as u64,
-                "canvas fetch timed out — emitting no section"
+                "canvas fetch timed out — serving stale"
             );
-            return None;
+            return CanvasFetchResult::Failed;
         }
     };
 
@@ -2453,27 +2564,31 @@ async fn fetch_canvas_section(channel_id: Uuid, rest: &RestClient) -> Option<Str
             tracing::warn!(
                 target: "canvas::fetch",
                 channel = %channel_id,
-                "canvas query response is not a JSON array — emitting no section"
+                "canvas query response is not a JSON array — serving stale"
             );
-            return None;
+            return CanvasFetchResult::Failed;
         }
     };
 
-    canvas_section_from_query_response(events, &channel_id.to_string())
+    match canvas_pointer_from_query_response(events, &channel_id.to_string()) {
+        Some(pointer) => CanvasFetchResult::Present(pointer),
+        None => CanvasFetchResult::Absent,
+    }
 }
 
-/// Parse a canvas query response array and render a `[Channel Canvas]` section.
+/// Parse a canvas query response array and return a `CanvasPointer`.
 ///
 /// Extracted as a pure function so tests can exercise the parsing/validation
 /// logic without async machinery or relay connectivity.
 ///
 /// Returns `None` on: empty array, blank content, malformed/partial event JSON
 /// (requires a complete, structurally valid Nostr event), or an out-of-range
-/// `created_at` timestamp. Never falls back to epoch or raw integers.
-pub(crate) fn canvas_section_from_query_response(
+/// `created_at` timestamp. A `None` result signals `Absent` (not `Failed`) —
+/// the relay responded but no usable canvas exists.
+pub(crate) fn canvas_pointer_from_query_response(
     events: &[serde_json::Value],
     channel_uuid: &str,
-) -> Option<String> {
+) -> Option<crate::queue::CanvasPointer> {
     let raw = events.first()?;
 
     // Deserialise as a complete Nostr Event. Partial objects (missing pubkey,
@@ -2485,7 +2600,7 @@ pub(crate) fn canvas_section_from_query_response(
                 target: "canvas::fetch",
                 channel = %channel_uuid,
                 %err,
-                "canvas query returned a malformed event — emitting no section",
+                "canvas query returned a malformed event — emitting no pointer",
             );
             return None;
         }
@@ -2498,7 +2613,7 @@ pub(crate) fn canvas_section_from_query_response(
             target: "canvas::fetch",
             channel = %channel_uuid,
             %err,
-            "canvas event failed signature verification — emitting no section",
+            "canvas event failed signature verification — emitting no pointer",
         );
         return None;
     }
@@ -2509,7 +2624,7 @@ pub(crate) fn canvas_section_from_query_response(
             target: "canvas::fetch",
             channel = %channel_uuid,
             kind = %event.kind.as_u16(),
-            "canvas event has unexpected kind — emitting no section",
+            "canvas event has unexpected kind — emitting no pointer",
         );
         return None;
     }
@@ -2525,7 +2640,7 @@ pub(crate) fn canvas_section_from_query_response(
         tracing::warn!(
             target: "canvas::fetch",
             channel = %channel_uuid,
-            "canvas event is missing expected h-tag — emitting no section",
+            "canvas event is missing expected h-tag — emitting no pointer",
         );
         return None;
     }
@@ -2535,7 +2650,7 @@ pub(crate) fn canvas_section_from_query_response(
         tracing::debug!(
             target: "canvas::fetch",
             channel = %channel_uuid,
-            "latest canvas event has blank content — emitting no section"
+            "latest canvas event has blank content — emitting no pointer (Absent)"
         );
         return None;
     }
@@ -2552,7 +2667,7 @@ pub(crate) fn canvas_section_from_query_response(
             tracing::warn!(
                 target: "canvas::fetch",
                 channel = %channel_uuid,
-                "canvas event created_at overflows i64 — emitting no section",
+                "canvas event created_at overflows i64 — emitting no pointer",
             );
             return None;
         }
@@ -2564,7 +2679,7 @@ pub(crate) fn canvas_section_from_query_response(
                 target: "canvas::fetch",
                 channel = %channel_uuid,
                 ts_secs,
-                "canvas event has out-of-range created_at — emitting no section",
+                "canvas event has out-of-range created_at — emitting no pointer",
             );
             return None;
         }
@@ -2574,22 +2689,12 @@ pub(crate) fn canvas_section_from_query_response(
         target: "canvas::fetch",
         channel = %channel_uuid,
         event_id = %id,
-        "injected channel canvas metadata section into system prompt"
+        "resolved canvas revision pointer for [Context]"
     );
-    Some(render_canvas_section(&id, &timestamp, channel_uuid))
-}
-
-/// Render the `[Channel Canvas]` metadata section string.
-///
-/// Pure function — kept separate so unit tests can exercise rendering
-/// without async machinery or relay connectivity.
-pub(crate) fn render_canvas_section(event_id: &str, timestamp: &str, channel_uuid: &str) -> String {
-    format!(
-        "[Channel Canvas]\n\
-         Canvas revision (event ID): {event_id}\n\
-         Last modified: {timestamp}\n\
-         Fetch current content with: buzz canvas get --channel {channel_uuid}"
-    )
+    Some(crate::queue::CanvasPointer {
+        event_id: id,
+        timestamp,
+    })
 }
 
 /// Fetch conversation context (thread or DM) for a batch before prompting.
@@ -4066,80 +4171,6 @@ mod tests {
         // No base_prompt configured: nothing to prepend regardless of version.
         let composed = prepend_base_for_legacy(1, None, "hello channel");
         assert_eq!(composed, "hello channel");
-    }
-
-    // ── prepend_canvas_for_legacy ─────────────────────────────────────────────
-
-    #[test]
-    fn test_initial_message_legacy_agent_gets_canvas_prepended() {
-        // Legacy agents (protocol_version < 2) receive the canvas section before
-        // the initial-message body so it arrives before the first prompt.
-        let canvas = "[Channel Canvas]\nCanvas revision (event ID): abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234\nLast modified: 2024-01-15T10:30:00Z\nFetch current content with: buzz canvas get --channel 00f1ccaf-1506-4dd7-9a0e-fa67e9e486ae";
-        let composed = prepend_canvas_for_legacy(1, Some(canvas), "do the thing");
-        assert!(
-            composed.starts_with("[Channel Canvas]"),
-            "canvas must precede the body"
-        );
-        assert!(
-            composed.ends_with("do the thing"),
-            "body must follow the canvas"
-        );
-        assert!(
-            composed.contains("\n\ndo the thing"),
-            "canvas and body separated by blank line"
-        );
-    }
-
-    #[test]
-    fn test_initial_message_modern_agent_omits_canvas_from_body() {
-        // Protocol-v2 agents receive canvas in systemPrompt; it must NOT be
-        // duplicated in the initial-message user turn.
-        let canvas = "[Channel Canvas]\nsome section";
-        let composed = prepend_canvas_for_legacy(2, Some(canvas), "do the thing");
-        assert_eq!(
-            composed, "do the thing",
-            "modern agent initial message must not contain canvas"
-        );
-        assert!(
-            !composed.contains("[Channel Canvas]"),
-            "canvas must be absent from modern agent initial message"
-        );
-    }
-
-    #[test]
-    fn test_initial_message_legacy_agent_no_canvas_is_unchanged() {
-        // No canvas present: body passes through unmodified.
-        let composed = prepend_canvas_for_legacy(1, None, "do the thing");
-        assert_eq!(composed, "do the thing");
-    }
-
-    #[test]
-    fn test_initial_message_legacy_canvas_and_base_compose_correctly() {
-        // Verify the full composition order when both base and canvas are present:
-        // [Base] → canvas section → initial-message body.
-        let canvas = "[Channel Canvas]\ncanvas content";
-        let base_composed = prepend_base_for_legacy(1, Some("be helpful"), "do the thing");
-        let full = prepend_canvas_for_legacy(1, Some(canvas), &base_composed);
-        assert!(
-            full.starts_with("[Channel Canvas]"),
-            "canvas must be first in composed message"
-        );
-        assert!(
-            full.contains("[Base]"),
-            "base must be present in composed message"
-        );
-        assert!(
-            full.ends_with("do the thing"),
-            "body must be last in composed message"
-        );
-        // Order: canvas → base → body
-        let canvas_pos = full.find("[Channel Canvas]").unwrap();
-        let base_pos = full.find("[Base]").unwrap();
-        let body_pos = full.find("do the thing").unwrap();
-        assert!(
-            canvas_pos < base_pos && base_pos < body_pos,
-            "order must be: canvas → base → body"
-        );
     }
 
     // Pin the session/new systemPrompt framing: each present prompt carries its
@@ -6457,108 +6488,11 @@ mod tests {
             memory_enabled: false,
             harness_name: "goose".to_string(),
             relay_url: "ws://127.0.0.1:3000".to_string(),
+            canvas_cache: CanvasRevisionCache::new(),
         }
     }
 
-    // ── render_canvas_section ────────────────────────────────────────────────
-
-    #[test]
-    fn test_render_canvas_section_produces_exact_shape() {
-        let id = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-        let ts = "2024-01-15T10:30:00+00:00";
-        let uuid = "00f1ccaf-1506-4dd7-9a0e-fa67e9e486ae";
-        let section = render_canvas_section(id, ts, uuid);
-        assert_eq!(
-            section,
-            "[Channel Canvas]\n\
-             Canvas revision (event ID): a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n\
-             Last modified: 2024-01-15T10:30:00+00:00\n\
-             Fetch current content with: buzz canvas get --channel 00f1ccaf-1506-4dd7-9a0e-fa67e9e486ae"
-        );
-    }
-
-    // ── with_canvas ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_with_canvas_appends_to_existing_prompt() {
-        let result = with_canvas(Some("base content".into()), Some("[Channel Canvas]\nstuff"));
-        assert_eq!(result.unwrap(), "base content\n\n[Channel Canvas]\nstuff");
-    }
-
-    #[test]
-    fn test_with_canvas_returns_canvas_alone_when_no_prompt() {
-        let result = with_canvas(None, Some("[Channel Canvas]\nstuff"));
-        assert_eq!(result.unwrap(), "[Channel Canvas]\nstuff");
-    }
-
-    #[test]
-    fn test_with_canvas_returns_prompt_alone_when_no_canvas() {
-        let result = with_canvas(Some("base content".into()), None);
-        assert_eq!(result.unwrap(), "base content");
-    }
-
-    #[test]
-    fn test_with_canvas_returns_none_when_both_absent() {
-        let result = with_canvas(None, None);
-        assert!(result.is_none());
-    }
-
-    // ── canvas_sections cache invalidation ───────────────────────────────────
-
-    #[test]
-    fn test_invalidate_channel_clears_canvas_section() {
-        let ch = Uuid::new_v4();
-        let mut s = SessionState::default();
-        s.sessions.insert(ch, "sess".into());
-        s.canvas_sections
-            .insert(ch, "[Channel Canvas]\nrev abc".into());
-
-        s.invalidate_channel(&ch);
-
-        assert!(!s.canvas_sections.contains_key(&ch));
-        assert!(!s.sessions.contains_key(&ch));
-    }
-
-    #[test]
-    fn test_invalidate_all_clears_canvas_sections() {
-        let ch_a = Uuid::new_v4();
-        let ch_b = Uuid::new_v4();
-        let mut s = SessionState::default();
-        s.canvas_sections.insert(ch_a, "canvas-a".into());
-        s.canvas_sections.insert(ch_b, "canvas-b".into());
-        s.sessions.insert(ch_a, "sess-a".into());
-
-        s.invalidate_all();
-
-        assert!(s.canvas_sections.is_empty());
-        assert!(s.sessions.is_empty());
-    }
-
-    #[test]
-    fn test_invalidate_channel_leaves_other_channels_canvas_intact() {
-        let ch_a = Uuid::new_v4();
-        let ch_b = Uuid::new_v4();
-        let mut s = SessionState::default();
-        s.sessions.insert(ch_a, "sess-a".into());
-        s.sessions.insert(ch_b, "sess-b".into());
-        s.canvas_sections.insert(ch_a, "canvas-a".into());
-        s.canvas_sections.insert(ch_b, "canvas-b".into());
-
-        s.invalidate_channel(&ch_a);
-
-        assert!(!s.canvas_sections.contains_key(&ch_a));
-        assert_eq!(s.canvas_sections.get(&ch_b).unwrap(), "canvas-b");
-    }
-
-    #[test]
-    fn test_has_channel_state_true_when_only_canvas_section_present() {
-        let ch = Uuid::new_v4();
-        let mut s = SessionState::default();
-        s.canvas_sections.insert(ch, "canvas".into());
-        assert!(s.has_channel_state(&ch));
-    }
-
-    // ── canvas_section_from_query_response ───────────────────────────────────
+    // ── canvas_pointer_from_query_response ──────────────────────────────────
 
     const CHANNEL_UUID: &str = "00f1ccaf-1506-4dd7-9a0e-fa67e9e486ae";
 
@@ -6577,29 +6511,33 @@ mod tests {
     }
 
     #[test]
-    fn test_canvas_section_from_query_response_happy_path() {
+    fn test_canvas_pointer_from_query_response_happy_path() {
         let ev = make_canvas_event_value("# Team instructions\nBe helpful.");
         let id = ev["id"].as_str().unwrap().to_string();
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
-        let section = result.expect("expected Some");
-        assert!(section.contains(&id), "section must contain the event id");
-        assert!(section.contains("buzz canvas get --channel"));
-        assert!(section.contains(CHANNEL_UUID));
-        assert!(section.starts_with("[Channel Canvas]"));
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
+        let pointer = result.expect("expected Some");
+        assert_eq!(pointer.event_id, id, "pointer must carry the event id");
         // Timestamp must use Z suffix, not +00:00
-        assert!(section.contains('Z'), "timestamp must use Z suffix");
+        assert!(
+            pointer.timestamp.ends_with('Z'),
+            "timestamp must use Z suffix"
+        );
+        assert!(
+            !pointer.timestamp.contains("+00:00"),
+            "timestamp must not use +00:00 offset"
+        );
     }
 
     #[test]
-    fn test_canvas_section_from_query_response_empty_array_returns_none() {
-        let result = canvas_section_from_query_response(&[], CHANNEL_UUID);
+    fn test_canvas_pointer_from_query_response_empty_array_returns_none() {
+        let result = canvas_pointer_from_query_response(&[], CHANNEL_UUID);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_canvas_section_from_query_response_blank_content_returns_none() {
+    fn test_canvas_pointer_from_query_response_blank_content_returns_none() {
         let ev = make_canvas_event_value("   ");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "blank content must return None (cleared canvas)"
@@ -6607,22 +6545,22 @@ mod tests {
     }
 
     #[test]
-    fn test_canvas_section_from_query_response_empty_content_returns_none() {
+    fn test_canvas_pointer_from_query_response_empty_content_returns_none() {
         let ev = make_canvas_event_value("");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(result.is_none());
     }
 
     /// A bare JSON object with a plausible-looking id but missing pubkey/sig/kind/tags
     /// must be rejected — not silently accepted with partial metadata.
     #[test]
-    fn test_canvas_section_from_query_response_partial_object_returns_none() {
+    fn test_canvas_pointer_from_query_response_partial_object_returns_none() {
         let partial = serde_json::json!({
             "id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
             "created_at": 1705312200_i64,
             "content": "some instructions"
         });
-        let result = canvas_section_from_query_response(&[partial], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[partial], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "partial event object (missing pubkey/sig/kind/tags) must return None"
@@ -6632,7 +6570,7 @@ mod tests {
     /// A JSON object that looks like an event but has `created_at` as a string
     /// must be rejected — the nostr::Event parser enforces integer type.
     #[test]
-    fn test_canvas_section_from_query_response_string_timestamp_returns_none() {
+    fn test_canvas_pointer_from_query_response_string_timestamp_returns_none() {
         let keys = Keys::generate();
         let h_tag = Tag::parse(["h", CHANNEL_UUID]).expect("h tag");
         let mut ev = serde_json::to_value(
@@ -6644,7 +6582,7 @@ mod tests {
         .expect("serialise");
         // Corrupt created_at to a string value.
         ev["created_at"] = serde_json::Value::String("2026-03-15T16:30:00+00:00".into());
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "string created_at must be rejected by nostr::Event deserialiser"
@@ -6654,7 +6592,7 @@ mod tests {
     /// A JSON object that looks like an event but is missing `created_at`
     /// must be rejected — nostr::Event requires the field.
     #[test]
-    fn test_canvas_section_from_query_response_missing_timestamp_returns_none() {
+    fn test_canvas_pointer_from_query_response_missing_timestamp_returns_none() {
         let keys = Keys::generate();
         let h_tag = Tag::parse(["h", CHANNEL_UUID]).expect("h tag");
         let mut ev = serde_json::to_value(
@@ -6665,7 +6603,7 @@ mod tests {
         )
         .expect("serialise");
         ev.as_object_mut().unwrap().remove("created_at");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "missing created_at must be rejected by nostr::Event deserialiser"
@@ -6677,7 +6615,7 @@ mod tests {
     /// `u64::MAX as i64` wraps to -1, which chrono silently accepts as
     /// 1969-12-31T23:59:59Z. The checked i64::try_from must reject it first.
     #[test]
-    fn test_canvas_section_from_query_response_timestamp_max_returns_none() {
+    fn test_canvas_pointer_from_query_response_timestamp_max_returns_none() {
         let keys = Keys::generate();
         let h_tag = Tag::parse(["h", CHANNEL_UUID]).expect("h tag");
         let ev = serde_json::to_value(
@@ -6688,7 +6626,7 @@ mod tests {
                 .expect("sign"),
         )
         .expect("serialise");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "Timestamp::max() (u64::MAX) must return None — not wrap to 1969"
@@ -6698,7 +6636,7 @@ mod tests {
     /// A structurally complete but tampered event (content altered after signing)
     /// must be rejected by event.verify().
     #[test]
-    fn test_canvas_section_from_query_response_tampered_event_returns_none() {
+    fn test_canvas_pointer_from_query_response_tampered_event_returns_none() {
         let keys = Keys::generate();
         let h_tag = Tag::parse(["h", CHANNEL_UUID]).expect("h tag");
         let mut ev = serde_json::to_value(
@@ -6713,7 +6651,7 @@ mod tests {
         .expect("serialise");
         // Tamper the content after signing — id and sig no longer agree.
         ev["content"] = serde_json::Value::String("injected instructions".into());
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(
             result.is_none(),
             "tampered event must fail verify() and return None"
@@ -6722,7 +6660,7 @@ mod tests {
 
     /// An event with the wrong kind (not 40100) must be rejected.
     #[test]
-    fn test_canvas_section_from_query_response_wrong_kind_returns_none() {
+    fn test_canvas_pointer_from_query_response_wrong_kind_returns_none() {
         let keys = Keys::generate();
         let h_tag = Tag::parse(["h", CHANNEL_UUID]).expect("h tag");
         let ev = serde_json::to_value(
@@ -6732,14 +6670,14 @@ mod tests {
                 .expect("sign"),
         )
         .expect("serialise");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(result.is_none(), "wrong kind must return None");
     }
 
     /// An event missing the expected h-tag (or carrying a different channel UUID)
     /// must be rejected.
     #[test]
-    fn test_canvas_section_from_query_response_wrong_h_tag_returns_none() {
+    fn test_canvas_pointer_from_query_response_wrong_h_tag_returns_none() {
         let keys = Keys::generate();
         let wrong_h = Tag::parse(["h", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]).expect("h tag");
         let ev = serde_json::to_value(
@@ -6749,24 +6687,120 @@ mod tests {
                 .expect("sign"),
         )
         .expect("serialise");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
         assert!(result.is_none(), "mismatched h-tag must return None");
     }
 
     #[test]
-    fn test_canvas_section_from_query_response_timestamp_uses_z_suffix() {
+    fn test_canvas_pointer_from_query_response_timestamp_uses_z_suffix() {
         let ev = make_canvas_event_value("instructions");
-        let result = canvas_section_from_query_response(&[ev], CHANNEL_UUID);
-        let section = result.expect("valid event must produce a section");
+        let result = canvas_pointer_from_query_response(&[ev], CHANNEL_UUID);
+        let pointer = result.expect("valid event must produce a pointer");
         assert!(
-            section.contains('Z'),
+            pointer.timestamp.ends_with('Z'),
             "RFC3339 timestamp must use Z suffix, not +00:00"
         );
         assert!(
-            !section.contains("+00:00"),
+            !pointer.timestamp.contains("+00:00"),
             "timestamp must not use +00:00 offset"
         );
     }
+
+    // ── CanvasRevisionCache tri-state (A1) ────────────────────────────────────
+
+    #[test]
+    fn test_canvas_revision_cache_present_updates_and_returns_pointer() {
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        let pointer = crate::queue::CanvasPointer {
+            event_id: "abc123".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+        };
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Present(pointer.clone()));
+        assert_eq!(result, Some(pointer.clone()));
+        // Cache is updated: get() returns the pointer.
+        assert_eq!(cache.get(&ch), Some(pointer));
+    }
+
+    #[test]
+    fn test_canvas_revision_cache_absent_clears_entry() {
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        // Seed with a present pointer.
+        let pointer = crate::queue::CanvasPointer {
+            event_id: "abc123".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+        };
+        cache.resolve_for_turn(&ch, CanvasFetchResult::Present(pointer));
+        // Now canvas is cleared.
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Absent);
+        assert!(result.is_none(), "Absent must return None");
+        assert!(
+            cache.get(&ch).is_none(),
+            "Absent must clear the cache entry"
+        );
+    }
+
+    #[test]
+    fn test_canvas_revision_cache_failed_serves_stale() {
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        // Seed with a present pointer.
+        let pointer = crate::queue::CanvasPointer {
+            event_id: "stale123".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+        };
+        cache.resolve_for_turn(&ch, CanvasFetchResult::Present(pointer.clone()));
+        // Fetch fails.
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Failed);
+        assert_eq!(result, Some(pointer), "Failed must serve stale value");
+    }
+
+    #[test]
+    fn test_canvas_revision_cache_failed_first_returns_none() {
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        // No prior entry; first-fetch failure must emit nothing.
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Failed);
+        assert!(
+            result.is_none(),
+            "Failed with no prior entry must return None"
+        );
+    }
+
+    #[test]
+    fn test_canvas_revision_cache_present_to_absent_transition() {
+        // present → absent: confirmed deletion clears the pointer.
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        let pointer = crate::queue::CanvasPointer {
+            event_id: "rev1".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+        };
+        cache.resolve_for_turn(&ch, CanvasFetchResult::Present(pointer));
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Absent);
+        assert!(result.is_none(), "canvas deletion must clear the pointer");
+    }
+
+    #[test]
+    fn test_canvas_revision_cache_present_to_new_revision() {
+        // present → new revision: pointer updated.
+        let cache = CanvasRevisionCache::new();
+        let ch = Uuid::new_v4();
+        let old = crate::queue::CanvasPointer {
+            event_id: "rev1".to_string(),
+            timestamp: "2024-01-15T10:00:00Z".to_string(),
+        };
+        let new_p = crate::queue::CanvasPointer {
+            event_id: "rev2".to_string(),
+            timestamp: "2024-01-16T10:00:00Z".to_string(),
+        };
+        cache.resolve_for_turn(&ch, CanvasFetchResult::Present(old));
+        let result = cache.resolve_for_turn(&ch, CanvasFetchResult::Present(new_p.clone()));
+        assert_eq!(result, Some(new_p), "new revision must replace old pointer");
+    }
+
+    // ── ChannelInfoResolver TTL (A3) ──────────────────────────────────────────
 
     // ── new-session channel context (one resolve, two consumers) ─────────────
 
@@ -6823,23 +6857,24 @@ mod tests {
         json!([{ "tags": event_tags }])
     }
 
-    /// A normal channel yields a non-DM (canvas allowed) and its name for the
-    /// title suffix — and the second consumer reads it from cache, not the wire.
+    /// A normal channel resolves to its name and type; cached second call hits no wire.
     #[tokio::test]
-    async fn test_new_session_channel_context_qualifies_a_normal_channel() {
+    async fn test_channel_resolver_qualifies_a_normal_channel() {
         use std::sync::atomic::Ordering;
 
         let id = Uuid::new_v4();
         let response = channel_metadata_response(id, &[["name", "buzz-dev"], ["t", "stream"]]);
         let (resolver, requests, server) = counting_resolver(response).await;
 
-        let (is_dm, title_channel) = resolve_new_session_channel_context(&resolver, id).await;
-        assert!(!is_dm, "a stream channel is not a DM");
-        assert_eq!(title_channel.as_deref(), Some("buzz-dev"));
+        let info = resolver.resolve(id).await.expect("should resolve");
+        assert_eq!(info.name, "buzz-dev");
+        assert_eq!(info.channel_type, "stream");
+        assert!(!info.name.is_empty());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
 
-        let (_, again) = resolve_new_session_channel_context(&resolver, id).await;
-        assert_eq!(again.as_deref(), Some("buzz-dev"));
+        // Second resolve hits the cache, not the wire.
+        let again = resolver.resolve(id).await.expect("cached resolve");
+        assert_eq!(again.name, "buzz-dev");
         assert_eq!(
             requests.load(Ordering::SeqCst),
             1,
@@ -6848,61 +6883,167 @@ mod tests {
         server.abort();
     }
 
-    /// A DM carries no useful name, so it gets the bare agent title (and no
-    /// canvas section).
+    /// A DM channel resolves with the correct type.
     #[tokio::test]
-    async fn test_new_session_channel_context_leaves_a_dm_unqualified() {
+    async fn test_channel_resolver_resolves_dm_type() {
         let id = Uuid::new_v4();
         let response = channel_metadata_response(id, &[["name", "DM"], ["t", "dm"]]);
         let (resolver, _requests, server) = counting_resolver(response).await;
 
-        let (is_dm, title_channel) = resolve_new_session_channel_context(&resolver, id).await;
-        assert!(is_dm);
-        assert_eq!(
-            title_channel, None,
-            "a DM name must never reach the session title"
-        );
+        let info = resolver.resolve(id).await.expect("should resolve");
+        assert_eq!(info.channel_type, "dm");
         server.abort();
     }
 
-    /// The `"unknown"` placeholder `fetch_channel_info` substitutes for a
-    /// metadata event with no `name` tag is not a channel name: qualifying with
-    /// it would title every unnamed channel `Agent · #unknown`.
+    /// The `"unknown"` placeholder is returned as-is — callers exclude it from titles.
     #[tokio::test]
-    async fn test_new_session_channel_context_treats_the_unknown_name_as_absent() {
+    async fn test_channel_resolver_returns_unknown_name_for_unnamed_channel() {
         let id = Uuid::new_v4();
         let response = channel_metadata_response(id, &[["t", "stream"]]);
         let (resolver, _requests, server) = counting_resolver(response).await;
 
-        let (is_dm, title_channel) = resolve_new_session_channel_context(&resolver, id).await;
-        assert!(!is_dm, "a nameless stream channel is still not a DM");
+        let info = resolver.resolve(id).await.expect("should resolve");
         assert_eq!(
-            title_channel, None,
-            "the `unknown` placeholder must yield a bare title"
+            info.name, "unknown",
+            "nameless channel gets unknown placeholder"
         );
         server.abort();
     }
 
-    /// An unresolvable channel yields the bare title, fails closed as a DM, and
-    /// costs exactly ONE `fetch_channel_info` sequence — two attempts, because
-    /// `fetch_with_retry` retries once. `resolve()` caches only `Some`, so a
-    /// second resolve for the title would double this in front of `session/new`,
-    /// exactly when the relay is already degraded.
+    /// An unresolvable channel costs exactly ONE `fetch_channel_info` sequence —
+    /// two HTTP attempts (initial + one retry from fetch_with_retry). The resolver
+    /// does not cache failures, so a second call will retry.
     #[tokio::test]
-    async fn test_new_session_channel_context_attempts_an_unresolved_channel_once() {
+    async fn test_channel_resolver_attempts_unresolved_channel_once() {
         use std::sync::atomic::Ordering;
 
         let (resolver, requests, server) = counting_resolver(json!([])).await;
 
-        let (is_dm, title_channel) =
-            resolve_new_session_channel_context(&resolver, Uuid::new_v4()).await;
-        assert!(is_dm, "an undeterminable channel type must fail closed");
-        assert_eq!(title_channel, None, "unresolved channels get a bare title");
+        let result = resolver.resolve(Uuid::new_v4()).await;
+        assert!(result.is_none(), "unresolvable channel returns None");
         assert_eq!(
             requests.load(Ordering::SeqCst),
             2,
             "one fetch_channel_info sequence (initial attempt + single retry)"
         );
         server.abort();
+    }
+
+    /// Channel description is delivered through resolver when present in metadata.
+    #[tokio::test]
+    async fn test_channel_resolver_delivers_description() {
+        let id = Uuid::new_v4();
+        let response = channel_metadata_response(
+            id,
+            &[
+                ["name", "team-chat"],
+                ["t", "stream"],
+                ["about", "Engineering discussions"],
+            ],
+        );
+        let (resolver, _requests, server) = counting_resolver(response).await;
+
+        let info = resolver.resolve(id).await.expect("should resolve");
+        assert_eq!(info.description.as_deref(), Some("Engineering discussions"));
+        server.abort();
+    }
+
+    /// TTL expiry triggers a background refresh; stale value is served immediately
+    /// while the refresh runs (stale-while-revalidate).
+    #[tokio::test]
+    async fn test_channel_resolver_ttl_serves_stale_on_expiry() {
+        use std::sync::atomic::Ordering;
+
+        let id = Uuid::new_v4();
+        let response = channel_metadata_response(id, &[["name", "buzz-dev"], ["t", "stream"]]);
+        let (resolver, requests, server) = counting_resolver(response).await;
+
+        // Warm the cache.
+        let info = resolver.resolve(id).await.expect("should resolve");
+        assert_eq!(info.name, "buzz-dev");
+        let initial_requests = requests.load(Ordering::SeqCst);
+
+        // Manually expire the entry by setting refresh_after to the past.
+        {
+            let mut cache = resolver.cache.write().unwrap();
+            if let Some(entry) = cache.get_mut(&id) {
+                entry.refresh_after =
+                    tokio::time::Instant::now() - std::time::Duration::from_secs(1);
+            }
+        }
+
+        // resolve() returns stale immediately and spawns background refresh.
+        let stale = resolver.resolve(id).await.expect("stale serve");
+        assert_eq!(
+            stale.name, "buzz-dev",
+            "stale value served while refresh runs"
+        );
+
+        // Give background refresh time to complete.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let after_refresh = requests.load(Ordering::SeqCst);
+        assert!(
+            after_refresh > initial_requests,
+            "background refresh must have fired"
+        );
+        server.abort();
+    }
+
+    /// On a failed TTL refresh the entry's next_refresh_at is bumped by backoff,
+    /// preventing immediate re-retry on every subsequent consumer.
+    #[tokio::test]
+    async fn test_channel_resolver_ttl_backoff_on_failed_refresh() {
+        use std::sync::atomic::Ordering;
+
+        let id = Uuid::new_v4();
+        let response = channel_metadata_response(id, &[["name", "buzz-dev"], ["t", "stream"]]);
+        // Use a new resolver seeded with the channel at an already-expired TTL.
+        let (resolver, requests, server) = counting_resolver(json!([])).await;
+
+        // Manually seed the cache with an expired entry pointing at the non-responding server.
+        {
+            let mut cache = resolver.cache.write().unwrap();
+            cache.insert(
+                id,
+                CachedChannelInfo {
+                    info: PromptChannelInfo {
+                        name: "buzz-dev".to_string(),
+                        channel_type: "stream".to_string(),
+                        description: None,
+                    },
+                    refresh_after: tokio::time::Instant::now() - std::time::Duration::from_secs(1),
+                    next_refresh_at: tokio::time::Instant::now()
+                        - std::time::Duration::from_secs(1),
+                },
+            );
+        }
+
+        // First resolve: serves stale, spawns background refresh (which fails).
+        let info = resolver.resolve(id).await.expect("stale serve");
+        assert_eq!(info.name, "buzz-dev");
+
+        // Give background refresh time to fail and set backoff.
+        // fetch_with_retry sleeps CONTEXT_FETCH_RETRY_DELAY (500 ms) between its two
+        // attempts, so we must wait longer than that before inspecting the cache.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        // Verify: next_refresh_at should have been bumped by backoff.
+        {
+            let cache = resolver.cache.read().unwrap();
+            let entry = cache.get(&id).expect("entry still present");
+            // next_refresh_at should be in the future after backoff.
+            assert!(
+                entry.next_refresh_at > tokio::time::Instant::now(),
+                "next_refresh_at must be in the future after failed refresh backoff"
+            );
+        }
+
+        let after = requests.load(Ordering::SeqCst);
+        assert!(
+            after >= 2,
+            "failed refresh should have attempted (fetch_with_retry = 2 attempts)"
+        );
+        server.abort();
+        let _ = server;
     }
 }
