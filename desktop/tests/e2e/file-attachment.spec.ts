@@ -146,7 +146,9 @@ test("shows upload feedback before transferring a large file", async ({
     page.getByTestId("send-message").click(),
     expect(progress).toBeVisible({ timeout: 800 }),
   ]);
-  await expect(progress).toHaveAttribute("aria-label", "Preparing 0%");
+  await expect(progress).toHaveAttribute("aria-label", "Preparing");
+  await expect(page.getByTestId("composer-upload-spinner")).toBeVisible();
+  await expect(page.getByTestId("composer-upload-percentage")).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(
@@ -173,20 +175,22 @@ test("shows upload feedback before transferring a large file", async ({
       phase: "processing-video",
     });
   }, uploadId);
-  await expect(progress).toHaveAttribute("aria-label", "Processing 0%");
+  await expect(progress).toHaveAttribute("aria-label", "Processing");
   await waitForAnimations(page);
   const processingPhaseBox = await page
     .getByTestId("composer-upload-phase")
     .boundingBox();
-  const processingPercentageBox = await page
-    .getByTestId("composer-upload-percentage")
+  const processingStatusBox = await page
+    .getByTestId("composer-upload-status")
     .boundingBox();
   expect(processingPhaseBox).not.toBeNull();
-  expect(processingPercentageBox).not.toBeNull();
+  expect(processingStatusBox).not.toBeNull();
   expect(
-    (processingPercentageBox?.x ?? 0) -
+    (processingStatusBox?.x ?? 0) -
       ((processingPhaseBox?.x ?? 0) + (processingPhaseBox?.width ?? 0)),
   ).toBeGreaterThanOrEqual(3);
+  await expect(page.getByTestId("composer-upload-spinner")).toBeVisible();
+  await expect(page.getByTestId("composer-upload-percentage")).toHaveCount(0);
 
   await page.evaluate(async (id) => {
     await window.__BUZZ_E2E_EMIT_MEDIA_UPLOAD_PHASE__?.({
@@ -201,12 +205,9 @@ test("shows upload feedback before transferring a large file", async ({
   }, uploadId);
   await expect(progress).toHaveAttribute("aria-label", "Uploading 42%");
   await waitForAnimations(page);
-  const uploadingPercentageBox = await page
-    .getByTestId("composer-upload-percentage")
-    .boundingBox();
-  expect(uploadingPercentageBox).not.toBeNull();
-  expect(uploadingPercentageBox?.x ?? 0).toBeLessThan(
-    processingPercentageBox?.x ?? 0,
+  await expect(page.getByTestId("composer-upload-spinner")).toHaveCount(0);
+  await expect(page.getByTestId("composer-upload-percentage")).toHaveText(
+    "42%",
   );
 
   await page.getByTestId("composer-upload-cancel").click();

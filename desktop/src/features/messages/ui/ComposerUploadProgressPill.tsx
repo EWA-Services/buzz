@@ -5,6 +5,7 @@ import {
   backgroundMediaUploadPhaseLabel,
 } from "@/features/messages/lib/backgroundMediaUploadPhase";
 import { cn } from "@/shared/lib/cn";
+import { Spinner } from "@/shared/ui/spinner";
 
 export function ComposerUploadProgressPill({
   isUploading,
@@ -19,6 +20,7 @@ export function ComposerUploadProgressPill({
 }) {
   const reducedMotion = useReducedMotion();
   const phaseLabel = backgroundMediaUploadPhaseLabel(phase);
+  const isTransferring = phase === "uploading";
   const phaseTransition = reducedMotion
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.77, 0, 0.175, 1] as const };
@@ -50,7 +52,9 @@ export function ComposerUploadProgressPill({
           }}
         >
           <div
-            aria-label={`${phaseLabel} ${percentage}%`}
+            aria-label={
+              isTransferring ? `${phaseLabel} ${percentage}%` : phaseLabel
+            }
             aria-live="polite"
             className="relative h-9 w-[18.75rem] max-w-full overflow-hidden rounded-full border border-primary bg-primary text-primary-foreground"
             data-testid="composer-upload-progress"
@@ -90,13 +94,56 @@ export function ComposerUploadProgressPill({
                     </motion.span>
                   </AnimatePresence>
                   <motion.span
-                    className="ml-1 text-primary-foreground/80"
-                    data-testid="composer-upload-percentage"
+                    className="ml-1 inline-flex items-center text-primary-foreground/80"
+                    data-testid="composer-upload-status"
                     layout="position"
                     transition={phaseTransition}
                   >
-                    {"· "}
-                    {percentage}%
+                    <span aria-hidden="true">·</span>
+                    <AnimatePresence initial={false} mode="popLayout">
+                      {isTransferring ? (
+                        <motion.span
+                          animate={{ opacity: 1, y: 0 }}
+                          className="ml-1"
+                          data-testid="composer-upload-percentage"
+                          exit={{
+                            opacity: reducedMotion ? 1 : 0,
+                            y: reducedMotion ? 0 : -2,
+                          }}
+                          initial={{
+                            opacity: reducedMotion ? 1 : 0,
+                            y: reducedMotion ? 0 : 2,
+                          }}
+                          key="percentage"
+                          layout="position"
+                          transition={phaseTransition}
+                        >
+                          {percentage}%
+                        </motion.span>
+                      ) : (
+                        <motion.span
+                          animate={{ opacity: 1, y: 0 }}
+                          className="ml-1 inline-flex"
+                          data-testid="composer-upload-spinner"
+                          exit={{
+                            opacity: reducedMotion ? 1 : 0,
+                            y: reducedMotion ? 0 : -2,
+                          }}
+                          initial={{
+                            opacity: reducedMotion ? 1 : 0,
+                            y: reducedMotion ? 0 : 2,
+                          }}
+                          key="spinner"
+                          layout="position"
+                          transition={phaseTransition}
+                        >
+                          <Spinner
+                            aria-hidden="true"
+                            className="size-3.5 border-2"
+                          />
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
                   </motion.span>
                 </span>
               </span>
