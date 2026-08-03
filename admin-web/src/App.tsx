@@ -7,8 +7,9 @@ import {
   useState,
 } from "react";
 import {
+  type AuthMode,
   ApiFailure,
-  probeAuthRequired,
+  probeAuthMode,
   request,
   requestObjectUrl,
 } from "./api";
@@ -91,9 +92,9 @@ function StateView<T>({
   return resource.data ? children(resource.data) : null;
 }
 
-function Reports() {
+function Reports({ authMode }: { authMode: AuthMode }) {
   const resource = useResource(
-    () => request<Report[]>("/reports?status=open&limit=100"),
+    () => request<Report[]>("/reports?status=open&limit=100", authMode),
     "reports",
   );
   return (
@@ -141,9 +142,9 @@ function Reports() {
   );
 }
 
-function ReportDetail({ id }: { id: string }) {
+function ReportDetail({ id, authMode }: { id: string; authMode: AuthMode }) {
   const resource = useResource(
-    () => request<ReportDetailData>(`/reports/${id}`),
+    () => request<ReportDetailData>(`/reports/${id}`, authMode),
     id,
   );
   return (
@@ -216,9 +217,9 @@ function ReportDetail({ id }: { id: string }) {
   );
 }
 
-function FeedbackList() {
+function FeedbackList({ authMode }: { authMode: AuthMode }) {
   const resource = useResource(
-    () => request<FeedbackSummary[]>("/feedback"),
+    () => request<FeedbackSummary[]>("/feedback", authMode),
     "feedback",
   );
   const [query, setQuery] = useState("");
@@ -425,9 +426,15 @@ function FeedbackResults({
   return children(results);
 }
 
-function FeedbackDetailView({ id }: { id: string }) {
+function FeedbackDetailView({
+  id,
+  authMode,
+}: {
+  id: string;
+  authMode: AuthMode;
+}) {
   const resource = useResource(
-    () => request<FeedbackDetail>(`/feedback/${id}`),
+    () => request<FeedbackDetail>(`/feedback/${id}`, authMode),
     id,
   );
   return (
@@ -468,6 +475,7 @@ function FeedbackDetailView({ id }: { id: string }) {
                         <Attachment
                           key={`${attachment.hash}-${attachment.path}`}
                           attachment={attachment}
+                          authMode={authMode}
                         />
                       ))}
                     </dd>
@@ -601,7 +609,13 @@ function stripAttachmentMarkdown(
     .trim();
 }
 
-function Attachment({ attachment }: { attachment: FeedbackAttachment }) {
+function Attachment({
+  attachment,
+  authMode,
+}: {
+  attachment: FeedbackAttachment;
+  authMode: AuthMode;
+}) {
   const [objectUrl, setObjectUrl] = useState<string>();
   const [failed, setFailed] = useState(false);
   const path = attachment.path;
@@ -622,7 +636,7 @@ function Attachment({ attachment }: { attachment: FeedbackAttachment }) {
     let active = true;
     setObjectUrl(undefined);
     setFailed(false);
-    requestObjectUrl(path)
+    requestObjectUrl(path, authMode)
       .then((created) => {
         if (!active) {
           URL.revokeObjectURL(created);
@@ -638,7 +652,7 @@ function Attachment({ attachment }: { attachment: FeedbackAttachment }) {
       active = false;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [path]);
+  }, [path, authMode]);
 
   const detail = failed ? "Could not load attachment" : metadata;
 
@@ -885,6 +899,38 @@ function TokenPrompt({ rejected }: { rejected: boolean }) {
   );
 }
 
+/// Shown in nip98 mode when no NIP-07 extension is available. Instructs the
+/// operator to install nos2x or Alby before continuing.
+function Nip07Screen() {
+  return (
+    <div className="app">
+      <div className="state token-prompt">
+        <h2>Nostr extension required</h2>
+        <p>
+          This relay uses NIP-98 HTTP Auth. Install a NIP-07 browser extension
+          such as{" "}
+          <a
+            href="https://github.com/fiatjaf/nos2x"
+            target="_blank"
+            rel="noreferrer"
+          >
+            nos2x
+          </a>{" "}
+          or{" "}
+          <a href="https://getalby.com" target="_blank" rel="noreferrer">
+            Alby
+          </a>
+          , then reload this page. Your Nostr key will be used to sign each
+          request.
+        </p>
+        <button type="button" onClick={() => location.reload()}>
+          Reload
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const { path } = usePath();
   const token = useToken();
@@ -894,21 +940,20 @@ export function App() {
     if (token !== null) setEverHadToken(true);
   }, [token]);
 
-  // When no token is stored, probe the relay to find out whether it requires
-  // one. In insecure_no_auth mode the probe returns 200 and the dashboard
-  // renders without a credential; in token mode it returns 401 and the prompt
-  // is shown. `null` means the probe is still in flight.
-  const [authRequired, setAuthRequired] = useState<boolean | null>(
-    token !== null ? false : null,
+  // Probe the relay once to discover the auth mode. `null` means the probe is
+  // still in flight. Once resolved, the mode is stable for the session.
+  const [authMode, setAuthMode] = useState<AuthMode | null>(
+    // If we already have a token we know we're in token mode; skip the probe.
+    token !== null ? "token" : null,
   );
   useEffect(() => {
     if (token !== null) {
-      setAuthRequired(false);
+      setAuthMode("token");
       return;
     }
     let active = true;
-    probeAuthRequired().then((required) => {
-      if (active) setAuthRequired(required);
+    probeAuthMode().then((mode) => {
+      if (active) setAuthMode(mode);
     });
     return () => {
       active = false;
@@ -919,18 +964,24 @@ export function App() {
   const feedback = path.match(/^\/feedback\/([^/]+)$/);
 
   // Probe still in flight — render nothing to avoid a visible flash.
-  if (authRequired === null) return null;
+  if (authMode === null) return null;
 
-  if (authRequired && !token) return <TokenPrompt rejected={everHadToken} />;
+  // Token mode: show the token prompt until a valid token is stored.
+  if (authMode === "token" && !token)
+    return <TokenPrompt rejected={everHadToken} />;
+
+  // NIP-98 mode: require a NIP-07 extension.
+  if (authMode === "nip98" && !(window as Window & { nostr?: unknown }).nostr)
+    return <Nip07Screen />;
 
   const content = report ? (
-    <ReportDetail id={report[1]} />
+    <ReportDetail id={report[1]} authMode={authMode} />
   ) : feedback ? (
-    <FeedbackDetailView id={feedback[1]} />
+    <FeedbackDetailView id={feedback[1]} authMode={authMode} />
   ) : path === "/feedback" ? (
-    <FeedbackList />
+    <FeedbackList authMode={authMode} />
   ) : (
-    <Reports />
+    <Reports authMode={authMode} />
   );
   return (
     <div className="app">

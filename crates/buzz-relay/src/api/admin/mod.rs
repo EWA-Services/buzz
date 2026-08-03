@@ -8,7 +8,7 @@ use std::sync::Arc;
 use auth::authorize;
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue},
+    http::{header, HeaderMap, HeaderValue, Uri},
     middleware::{self, Next},
     response::Response,
     routing::get,
@@ -92,10 +92,11 @@ fn validate(value: Option<&str>, allowed: &[&str], code: &'static str) -> Result
 
 async fn reports(
     State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
     headers: HeaderMap,
     Query(query): Query<ReportQuery>,
 ) -> Result<Json<Vec<buzz_db::admin_moderation::AdminReport>>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, uri.path()).await?;
     validate(
         query.status.as_deref(),
         &["open", "resolved", "dismissed", "escalated"],
@@ -124,10 +125,11 @@ async fn reports(
 
 async fn report_detail(
     State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminReportDetail>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, uri.path()).await?;
     state
         .db
         .admin_get_report(id)
@@ -150,9 +152,10 @@ struct FeedbackSummary {
 
 async fn feedback(
     State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<Vec<FeedbackSummary>>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, uri.path()).await?;
     let items = state
         .db
         .admin_list_feedback(100)
@@ -176,10 +179,11 @@ async fn feedback(
 
 async fn feedback_detail(
     State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminFeedback>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, uri.path()).await?;
     state
         .db
         .admin_get_feedback(id)
@@ -190,10 +194,11 @@ async fn feedback_detail(
 
 async fn feedback_attachment(
     State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
     headers: HeaderMap,
     Path((id, sha256)): Path<(Uuid, String)>,
 ) -> Result<Response, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, uri.path()).await?;
     if !is_sha256(&sha256) {
         return Err(ApiError::not_found());
     }
@@ -328,6 +333,7 @@ fn summarize_body(body: &str, tags: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use auth::ADMIN_API_PREFIX;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -380,13 +386,13 @@ mod tests {
         Arc::new(state)
     }
 
-    async fn insecure_no_auth_state() -> Arc<crate::state::AppState> {
+    async fn disabled_mode_state() -> Arc<crate::state::AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
         config.admin = Some(crate::config::AdminConfig {
             host: "admin.example".to_string(),
-            auth: crate::config::AdminAuth::InsecureNoAuth,
+            auth: crate::config::AdminAuth::Disabled,
             web_dir: None,
         });
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
@@ -746,8 +752,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insecure_no_auth_mode_allows_unauthenticated_requests_on_the_admin_host() {
-        let state = insecure_no_auth_state().await;
+    async fn disabled_mode_allows_unauthenticated_requests_on_the_admin_host() {
+        let state = disabled_mode_state().await;
         for uri in mounted_routes() {
             let response = status_for(
                 state.clone(),
@@ -763,14 +769,14 @@ mod tests {
             assert_ne!(
                 response.status(),
                 StatusCode::UNAUTHORIZED,
-                "{uri} must not return 401 in insecure_no_auth mode"
+                "{uri} must not return 401 in disabled mode"
             );
         }
     }
 
     #[tokio::test]
-    async fn insecure_no_auth_mode_still_requires_the_correct_host() {
-        let state = insecure_no_auth_state().await;
+    async fn disabled_mode_still_requires_the_correct_host() {
+        let state = disabled_mode_state().await;
         let response = status_for(
             state,
             Request::builder()
@@ -783,13 +789,13 @@ mod tests {
         assert_eq!(
             response.status(),
             StatusCode::FORBIDDEN,
-            "wrong host must still be rejected in insecure_no_auth mode"
+            "wrong host must still be rejected in disabled mode"
         );
     }
 
     #[tokio::test]
-    async fn insecure_no_auth_mode_still_requires_a_matching_origin() {
-        let state = insecure_no_auth_state().await;
+    async fn disabled_mode_still_requires_a_matching_origin() {
+        let state = disabled_mode_state().await;
         let response = status_for(
             state,
             Request::builder()
@@ -803,7 +809,325 @@ mod tests {
         assert_eq!(
             response.status(),
             StatusCode::FORBIDDEN,
-            "mismatched origin must still be rejected in insecure_no_auth mode"
+            "mismatched origin must still be rejected in disabled mode"
         );
+    }
+
+    // ── NIP-98 mode helpers and tests ─────────────────────────────────────
+
+    /// Replay guard that always returns `true` — every event is "fresh".
+    /// Used in NIP-98 tests that don't specifically test replay protection.
+    struct AlwaysFreshReplayGuard;
+
+    impl buzz_auth::Nip98ReplayGuard for AlwaysFreshReplayGuard {
+        fn try_mark_in_scope<'a>(
+            &'a self,
+            _scope: &'a str,
+            _event_id: &'a nostr::EventId,
+            _ttl_secs: u64,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<bool, buzz_auth::AuthError>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(true) })
+        }
+    }
+
+    /// Replay guard that rejects any event ID it has seen before.
+    /// Used to test that the replay guard is actually invoked and enforced.
+    struct TrackingReplayGuard {
+        seen: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+    }
+
+    impl TrackingReplayGuard {
+        fn new() -> Self {
+            Self {
+                seen: std::sync::Mutex::new(std::collections::HashSet::new()),
+            }
+        }
+    }
+
+    impl buzz_auth::Nip98ReplayGuard for TrackingReplayGuard {
+        fn try_mark_in_scope<'a>(
+            &'a self,
+            _scope: &'a str,
+            event_id: &'a nostr::EventId,
+            _ttl_secs: u64,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<bool, buzz_auth::AuthError>> + Send + 'a>,
+        > {
+            let bytes = event_id.to_bytes();
+            let is_fresh = self.seen.lock().unwrap().insert(bytes);
+            Box::pin(async move { Ok(is_fresh) })
+        }
+    }
+
+    /// Build a test AppState in nip98 mode with the given allowlisted pubkeys
+    /// and an AlwaysFreshReplayGuard (replay is never an issue for most tests).
+    async fn nip98_state(pubkeys: Vec<String>) -> Arc<crate::state::AppState> {
+        nip98_state_with_replay(pubkeys, Arc::new(AlwaysFreshReplayGuard)).await
+    }
+
+    async fn nip98_state_with_replay(
+        pubkeys: Vec<String>,
+        replay: Arc<dyn buzz_auth::Nip98ReplayGuard>,
+    ) -> Arc<crate::state::AppState> {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        config.admin = Some(crate::config::AdminConfig {
+            host: "admin.example".to_string(),
+            auth: crate::config::AdminAuth::Nip98 { pubkeys },
+            web_dir: None,
+        });
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool.clone());
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (mut state, _audit_shutdown) = crate::state::AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            nostr::Keys::generate(),
+            media_storage,
+        );
+        state.nip98_replay = replay;
+        Arc::new(state)
+    }
+
+    /// Build a NIP-98 Authorization header value for a GET to the given path
+    /// on `admin.example` (the test host). The path should be the handler-level
+    /// path (e.g. `/reports`); this helper prefixes it with `ADMIN_API_PREFIX`
+    /// to match the canonical URL the auth layer constructs in production.
+    fn make_nostr_auth(keys: &nostr::Keys, path: &str) -> String {
+        use nostr::{EventBuilder, Kind, Tag};
+        let url = format!("https://admin.example{ADMIN_API_PREFIX}{path}");
+        let tags = vec![
+            Tag::parse(["u", &url]).unwrap(),
+            Tag::parse(["method", "GET"]).unwrap(),
+        ];
+        let event = EventBuilder::new(Kind::HttpAuth, "")
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign");
+        let json = serde_json::to_string(&event).expect("serialize");
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine as _;
+        format!("Nostr {}", BASE64.encode(json.as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_rejects_missing_credential_with_nostr_challenge() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok()),
+            Some("Nostr"),
+            "nip98 mode must advertise Nostr challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_valid_event_from_allowlisted_pubkey_is_served() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&keys, "/reports");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        // 200 (DB returns empty list) — not 401.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_valid_event_wrong_pubkey_is_401() {
+        let allowlisted = nostr::Keys::generate();
+        let other = nostr::Keys::generate();
+        let state = nip98_state(vec![allowlisted.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&other, "/reports");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_duplicate_authorization_headers_are_401() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&keys, "/reports");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth.clone())
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_wrong_url_in_event_is_401() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        // Sign for /feedback but send to /reports — u-tag mismatch.
+        let auth = make_nostr_auth(&keys, "/feedback");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_replay_is_rejected() {
+        let keys = nostr::Keys::generate();
+        let tracking = Arc::new(TrackingReplayGuard::new());
+        let state =
+            nip98_state_with_replay(vec![keys.public_key().to_hex()], tracking.clone()).await;
+        let auth = make_nostr_auth(&keys, "/reports");
+        // First request succeeds.
+        let first = status_for(
+            state.clone(),
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth.clone())
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        // Second request with the same event ID must be rejected.
+        let second = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn nip98_mode_valid_credential_on_wrong_host_is_forbidden_not_unauthorized() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let auth = make_nostr_auth(&keys, "/reports");
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "community.example")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── Regression pins — token-mode and disabled-mode unchanged ──────────
+
+    #[tokio::test]
+    async fn token_mode_regression_pin_valid_credential_is_served() {
+        let response = status_for(test_state().await, status_request(authorized("/reports"))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn token_mode_regression_pin_missing_credential_is_401() {
+        let state = test_state().await;
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer"),
+            "token mode must advertise Bearer challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_mode_regression_pin_unauthenticated_request_is_served() {
+        let state = disabled_mode_state().await;
+        let response = status_for(
+            state,
+            Request::builder()
+                .uri("/reports")
+                .header(header::HOST, "admin.example")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

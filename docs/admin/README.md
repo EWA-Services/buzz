@@ -18,14 +18,16 @@ Plus one of the authentication modes below.
 ## Authentication
 
 The admin API requires explicit authentication configuration. Setting only
-`BUZZ_ADMIN_HOST` is a startup error — there is no insecure default.
+`BUZZ_ADMIN_HOST` is a startup error — there is no insecure default. Configure
+the mode with `BUZZ_ADMIN_AUTH` (defaults to `token` when unset).
 
-### Token mode (recommended for public-facing or OSS deployments)
+### Token mode (`BUZZ_ADMIN_AUTH=token`, default)
 
 Every `/api/admin/v1` request must carry the operator token as a bearer
 credential.
 
 ```text
+BUZZ_ADMIN_AUTH=token    # optional — this is the default
 BUZZ_ADMIN_TOKEN=<64 hex characters>
 ```
 
@@ -58,11 +60,11 @@ scheme is matched case-insensitively per RFC 9110, and the credential is
 compared in constant time. The token never appears in URLs, logs, or traces.
 
 The dashboard probes for auth mode on first load: if the relay returns `401` to
-an unauthenticated request, the dashboard prompts for the token and keeps it in
-`sessionStorage` for that browser session; a rejected token is discarded and
-re-prompted. Attachment bytes are fetched through the authenticated API and
-rendered from object URLs, because `<img src>` and `<a href>` cannot carry an
-`Authorization` header.
+an unauthenticated request with `WWW-Authenticate: Bearer`, the dashboard prompts
+for the token and keeps it in `sessionStorage` for that browser session; a
+rejected token is discarded and re-prompted. Attachment bytes are fetched through
+the authenticated API and rendered from object URLs, because `<img src>` and
+`<a href>` cannot carry an `Authorization` header.
 
 In token mode, each new browser session issues one unauthenticated probe that
 returns `401` by design before the token is entered. If you alert on admin-API
@@ -73,37 +75,97 @@ The shared token authenticates the deployment operator role, not a person. It
 carries no per-operator identity, attribution, or individual revocation —
 rotating it revokes access for everyone at once.
 
-### Network-layer auth mode (for deployments behind a VPN or private ingress)
+### NIP-98 mode (`BUZZ_ADMIN_AUTH=nip98`)
+
+Every `/api/admin/v1` request must carry a NIP-98 HTTP Auth header containing a
+signed kind-27235 event. The signer's pubkey must be in the `BUZZ_ADMIN_PUBKEYS`
+allowlist.
+
+```text
+BUZZ_ADMIN_AUTH=nip98
+BUZZ_ADMIN_PUBKEYS=<64-char hex pubkey>[,<64-char hex pubkey>...]
+```
+
+- `BUZZ_ADMIN_PUBKEYS` must be a non-empty comma-separated list of 64-character
+  lowercase hex pubkeys. Invalid entries or an empty list are startup errors.
+- Duplicate pubkeys are silently deduplicated.
+- `BUZZ_ADMIN_TOKEN` set alongside `nip98` is a startup error (ambiguous intent).
+- `BUZZ_ADMIN_PUBKEYS` set in any other mode is warn-and-ignored.
+
+Each request requires:
+
+```http
+Authorization: Nostr <base64(JSON event)>
+```
+
+The event must be kind 27235, have a `u` tag matching the exact request URL
+(`https://admin.example.com/api/admin/v1/reports`), a `method` tag `GET`, a
+valid Schnorr signature, and a `created_at` within ±60 seconds of now. A
+deployment-scoped replay guard rejects reused event IDs.
+
+Any auth failure (bad event, bad signature, expired, replay, non-allowlisted
+pubkey, duplicate `Authorization` header) returns `401` with
+`WWW-Authenticate: Nostr`. The dashboard uses this header to discover the auth
+mode on first load.
+
+The dashboard requires a NIP-07 browser extension (such as
+[nos2x](https://github.com/fiatjaf/nos2x) or [Alby](https://getalby.com)). If
+no extension is detected, the dashboard shows an installation screen. Once an
+extension is present, each API request is automatically signed with the operator's
+nostr key without any prompts.
+
+Adding or removing a pubkey from `BUZZ_ADMIN_PUBKEYS` and restarting the relay
+grants or revokes individual operator access without affecting any other operator.
+
+### Disabled mode (`BUZZ_ADMIN_AUTH=disabled`)
 
 Operators whose admin API is already protected at the network layer — for
 example by a corporate VPN such as WARP+Okta — can disable bearer authentication
 entirely:
 
 ```text
-BUZZ_ADMIN_INSECURE_NO_AUTH=true
+BUZZ_ADMIN_AUTH=disabled
 ```
 
-Only the exact value `true` is accepted; any other non-empty value is a startup
-error. `BUZZ_ADMIN_TOKEN` and `BUZZ_ADMIN_INSECURE_NO_AUTH=true` set at the same
-time is also a startup error (ambiguous intent).
+Only the exact value `disabled` is accepted. `BUZZ_ADMIN_TOKEN` and
+`BUZZ_ADMIN_AUTH=disabled` set at the same time is a startup error (ambiguous
+intent).
 
 In this mode the relay logs a `WARN` on every startup:
 
 ```
-BUZZ_ADMIN_INSECURE_NO_AUTH=true — the admin API is unauthenticated; the
-operator has asserted that access is controlled at the network layer
+BUZZ_ADMIN_AUTH=disabled — the admin API is unauthenticated; the operator has
+asserted that access is controlled at the network layer
 ```
 
 The `Host`/`Origin` checks remain active as defense-in-depth. The dashboard
-detects that no token is needed on first load (probe returns `200`) and skips
-the token prompt, rendering the dashboard directly.
+detects that no credential is needed on first load (probe returns `200`) and
+skips any auth prompt, rendering the dashboard directly.
 
 **This mode relies entirely on the operator's network controls.** If the admin
 API is reachable by untrusted clients, the entire moderation and feedback dataset
-is exposed. Use token mode instead.
+is exposed. Use token or nip98 mode instead.
 
 When using a reverse proxy in this mode, document the requirement and consider a
 proxy-injected shared secret or signed identity header for additional assurance.
+
+### Mode selection and error behaviour
+
+`BUZZ_ADMIN_AUTH` accepts exactly `token`, `disabled`, or `nip98`. Any other
+non-empty value is a startup error (typo-proofing). Conflicting combinations also
+abort startup:
+
+| Combination | Result |
+|---|---|
+| `BUZZ_ADMIN_AUTH=token` without `BUZZ_ADMIN_TOKEN` | startup error |
+| `BUZZ_ADMIN_AUTH=disabled` + `BUZZ_ADMIN_TOKEN` | startup error |
+| `BUZZ_ADMIN_AUTH=nip98` without `BUZZ_ADMIN_PUBKEYS` | startup error |
+| `BUZZ_ADMIN_AUTH=nip98` + `BUZZ_ADMIN_TOKEN` | startup error |
+| `BUZZ_ADMIN_AUTH` junk value | startup error |
+| `BUZZ_ADMIN_TOKEN` without `BUZZ_ADMIN_HOST` | warn + ignore |
+| `BUZZ_ADMIN_AUTH` without `BUZZ_ADMIN_HOST` | warn + ignore |
+| `BUZZ_ADMIN_PUBKEYS` without `BUZZ_ADMIN_HOST` | warn + ignore |
+| `BUZZ_ADMIN_PUBKEYS` in non-nip98 mode | warn + ignore |
 
 ## Content Security Policy
 
@@ -142,14 +204,20 @@ relay path.
 
 **Upgrading from a pre-auth release (Buzz prior to the introduction of this
 `BUZZ_ADMIN_HOST` requirement):** any deployed relay with `BUZZ_ADMIN_HOST` set
-refuses to start after upgrade unless one of the two auth variables is also set.
-Choose the mode that fits your deployment:
+refuses to start after upgrade unless `BUZZ_ADMIN_AUTH` (or `BUZZ_ADMIN_TOKEN`
+for the default token mode) is also set. Choose the mode that fits your
+deployment:
 
 - **Token mode:** mint a token with `openssl rand -hex 32`, set `BUZZ_ADMIN_TOKEN`
   in your deploy config, then roll the new version.
 - **Network-layer mode (e.g. Block's `bb-public` behind WARP+Okta):** set
-  `BUZZ_ADMIN_INSECURE_NO_AUTH=true` in your deploy config (a static non-secret),
-  then roll the new version.
+  `BUZZ_ADMIN_AUTH=disabled` in your deploy config, then roll the new version.
+- **Nostr pubkey allowlist:** set `BUZZ_ADMIN_AUTH=nip98` and
+  `BUZZ_ADMIN_PUBKEYS` in your deploy config, then roll the new version.
+
+**Upgrading from the previous `BUZZ_ADMIN_INSECURE_NO_AUTH=true` variable:**
+replace it with `BUZZ_ADMIN_AUTH=disabled`. Behavior is identical; the old
+variable is no longer recognised.
 
 Relays without `BUZZ_ADMIN_HOST` are completely unaffected.
 
@@ -185,8 +253,8 @@ route:
 
 - `GET /api/admin/v1/feedback/:id/attachments/:sha256`
 
-The route uses the same bearer credential (or network-layer boundary in
-insecure_no_auth mode), private-ingress, exact admin `Host`, and same-origin
+The route uses the same credential requirement (bearer token, NIP-98 event, or
+network-layer boundary in disabled mode), private-ingress, exact admin `Host`, and same-origin
 boundary as the JSON API. It is not a generic media endpoint. The relay loads
 the feedback row, derives its community from server-owned provenance, verifies
 that host resolution still maps to the row's `community_id`, and requires the
@@ -205,9 +273,8 @@ trace containing feedback ID, community ID, and attachment hash, but no feedback
 body or attachment URL.
 
 The human trust boundary is the chosen auth mode plus the private admin ingress.
-Neither token mode nor network-layer mode provides per-operator identity. Anyone
-admitted to the dashboard can read attachments for feedback records they can
-access. Per-person attribution or revocation requires authenticated operator
-identity at ingress/application level (for example an Okta-injected identity
-header or a NIP-98 pubkey allowlist); this endpoint deliberately does not claim
-to provide it.
+Token mode and disabled mode provide no per-operator identity; anyone admitted
+to the dashboard can read attachments for feedback records they can access. NIP-98
+mode provides per-operator attribution and individual revocability. Per-person
+identity in token or disabled mode requires authenticated operator identity at
+ingress/application level (for example an Okta-injected identity header).

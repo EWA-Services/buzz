@@ -400,11 +400,11 @@ test("concurrent rejected requests re-prompt exactly once", async ({
   ).toHaveCount(1);
 });
 
-test("probe: insecure_no_auth mode skips the token prompt when probe returns 200", async ({
+test("probe: disabled mode skips the token prompt when probe returns 200", async ({
   page,
 }) => {
   // No token in storage. The probe to /api/admin/v1/reports returns 200,
-  // indicating the relay runs in insecure_no_auth mode. The dashboard must
+  // indicating the relay runs in disabled mode. The dashboard must
   // render directly without showing the token prompt.
   await page.route("**/api/admin/v1/reports**", (route) =>
     route.fulfill({ contentType: "application/json", body: "[]" }),
@@ -428,6 +428,7 @@ test("probe: token mode shows the prompt when probe returns 401", async ({
   await page.route("**/api/admin/v1/**", (route) =>
     route.fulfill({
       status: 401,
+      headers: { "www-authenticate": "Bearer" },
       contentType: "application/json",
       body: JSON.stringify({
         error: { code: "unauthorized", message: "token required" },
@@ -445,4 +446,94 @@ test("probe: token mode shows the prompt when probe returns 401", async ({
   await expect(page.getByRole("heading", { name: "Open reports" })).toHaveCount(
     0,
   );
+});
+
+test("probe: nip98 mode without a NIP-07 extension shows the installation screen", async ({
+  page,
+}) => {
+  // No token in storage. The probe returns 401 with WWW-Authenticate: Nostr,
+  // and window.nostr is NOT injected. The dashboard must show the extension
+  // installation screen instead of the token prompt or the dashboard.
+  await page.route("**/api/admin/v1/**", (route) =>
+    route.fulfill({
+      status: 401,
+      headers: { "www-authenticate": "Nostr" },
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "unauthorized", message: "nip98 required" },
+      }),
+    }),
+  );
+
+  await page.goto("/reports");
+
+  await expect(
+    page.getByRole("heading", { name: "Nostr extension required" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Admin token required" }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Open reports" })).toHaveCount(
+    0,
+  );
+});
+
+test("probe: nip98 mode with a mocked NIP-07 extension signs requests and renders the dashboard", async ({
+  page,
+}) => {
+  // Inject a minimal window.nostr stub that returns a fake signed event.
+  // The relay mock accepts any Authorization: Nostr header.
+  await page.addInitScript(() => {
+    (window as Window & { nostr?: unknown }).nostr = {
+      signEvent: async (event: {
+        kind: number;
+        created_at: number;
+        tags: string[][];
+        content: string;
+      }) => ({
+        ...event,
+        id: "a".repeat(64),
+        pubkey: "b".repeat(64),
+        sig: "c".repeat(128),
+      }),
+    };
+  });
+
+  const authorizationHeaders: (string | undefined)[] = [];
+  await page.route("**/api/admin/v1/**", async (route) => {
+    const headers = route.request().headers();
+    authorizationHeaders.push(headers.authorization);
+    // Probe: return 401 Nostr to trigger nip98 mode detection.
+    if (!headers.authorization) {
+      await route.fulfill({
+        status: 401,
+        headers: { "www-authenticate": "Nostr" },
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "unauthorized", message: "nip98 required" },
+        }),
+      });
+    } else {
+      // Any Authorization: Nostr header → accept.
+      await route.fulfill({ contentType: "application/json", body: "[]" });
+    }
+  });
+
+  await page.goto("/reports");
+
+  await expect(
+    page.getByRole("heading", { name: "Open reports" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Nostr extension required" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Admin token required" }),
+  ).toHaveCount(0);
+  // The authenticated request used Authorization: Nostr.
+  const authenticatedHeaders = authorizationHeaders.filter(Boolean);
+  expect(authenticatedHeaders.length).toBeGreaterThan(0);
+  for (const h of authenticatedHeaders) {
+    expect(h).toMatch(/^Nostr /);
+  }
 });

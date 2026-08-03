@@ -26,17 +26,26 @@ pub enum ConfigError {
 
 /// Authentication mode for the deployment-admin API.
 ///
-/// Exactly one variant is active; the invalid states (`token: None` +
-/// `insecure_no_auth: false`, or `token: Some` + `insecure_no_auth: true`)
-/// are not representable.
+/// Configured by `BUZZ_ADMIN_AUTH`. Exactly one variant is active; invalid
+/// combinations (e.g. `BUZZ_ADMIN_TOKEN` set in `Nip98` mode) are startup
+/// errors — they are not representable.
 #[derive(Debug, Clone)]
 pub enum AdminAuth {
     /// Operator bearer credential required on every request.
+    /// Selected by `BUZZ_ADMIN_AUTH=token` (or leaving `BUZZ_ADMIN_AUTH` unset).
     Token(AdminToken),
     /// Bearer authentication disabled. The operator has explicitly asserted
     /// that the admin API is protected at the network layer (reverse proxy,
     /// VPN, firewall). `Host`/`Origin` checks remain active as defense-in-depth.
-    InsecureNoAuth,
+    /// Selected by `BUZZ_ADMIN_AUTH=disabled`.
+    Disabled,
+    /// NIP-98 HTTP Auth. Every request must carry an `Authorization: Nostr`
+    /// header containing a signed kind-27235 event. The pubkey is checked
+    /// against `BUZZ_ADMIN_PUBKEYS`. Selected by `BUZZ_ADMIN_AUTH=nip98`.
+    Nip98 {
+        /// Allowlisted operator pubkeys (64-char lowercase hex, deduplicated).
+        pubkeys: Vec<String>,
+    },
 }
 
 /// Deny-by-default read-only deployment-admin configuration.
@@ -953,10 +962,16 @@ impl Config {
                          dashboard and API stay disabled and the token is ignored"
                     );
                 }
-                if std::env::var_os("BUZZ_ADMIN_INSECURE_NO_AUTH").is_some() {
+                if std::env::var_os("BUZZ_ADMIN_AUTH").is_some() {
                     tracing::warn!(
-                        "BUZZ_ADMIN_INSECURE_NO_AUTH is set without BUZZ_ADMIN_HOST — \
-                         the admin dashboard and API stay disabled and the flag is ignored"
+                        "BUZZ_ADMIN_AUTH is set without BUZZ_ADMIN_HOST — \
+                         the admin dashboard and API stay disabled and the value is ignored"
+                    );
+                }
+                if std::env::var_os("BUZZ_ADMIN_PUBKEYS").is_some() {
+                    tracing::warn!(
+                        "BUZZ_ADMIN_PUBKEYS is set without BUZZ_ADMIN_HOST — \
+                         the admin dashboard and API stay disabled and the value is ignored"
                     );
                 }
                 None
@@ -968,40 +983,91 @@ impl Config {
                     ));
                 }
 
-                // Parse BUZZ_ADMIN_INSECURE_NO_AUTH. Only the exact value
-                // "true" enables disabled mode; any other non-empty value is a
-                // startup error to prevent silent typo-coercion.
-                let insecure_no_auth =
-                    match std::env::var("BUZZ_ADMIN_INSECURE_NO_AUTH").ok().as_deref() {
-                        None | Some("") => false,
-                        Some("true") => true,
-                        Some(other) => {
-                            return Err(ConfigError::InvalidValue(format!(
-                                "BUZZ_ADMIN_INSECURE_NO_AUTH must be exactly \"true\" or unset; \
+                // Parse BUZZ_ADMIN_AUTH. Accepted values: "token" (default when
+                // unset), "disabled", "nip98". Any other non-empty value is a
+                // startup error (typo-proofing).
+                let auth_mode = match std::env::var("BUZZ_ADMIN_AUTH")
+                    .ok()
+                    .as_deref()
+                    .map(str::trim)
+                {
+                    None | Some("") | Some("token") => "token",
+                    Some("disabled") => "disabled",
+                    Some("nip98") => "nip98",
+                    Some(other) => {
+                        return Err(ConfigError::InvalidValue(format!(
+                            "BUZZ_ADMIN_AUTH must be \"token\", \"disabled\", or \"nip98\"; \
                              got \"{other}\""
-                            )))
-                        }
-                    };
+                        )))
+                    }
+                };
 
-                // Both BUZZ_ADMIN_TOKEN and BUZZ_ADMIN_INSECURE_NO_AUTH=true
-                // is ambiguous intent; fail closed.
-                if insecure_no_auth && std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
-                    return Err(ConfigError::InvalidValue(
-                        "BUZZ_ADMIN_TOKEN and BUZZ_ADMIN_INSECURE_NO_AUTH=true are mutually \
-                         exclusive — set one or the other, not both"
-                            .to_string(),
-                    ));
+                // Parse BUZZ_ADMIN_PUBKEYS — required non-empty in nip98 mode;
+                // warn-and-ignore in all other modes (same ignored-var convention
+                // as BUZZ_ADMIN_TOKEN without BUZZ_ADMIN_HOST).
+                let admin_pubkeys_raw = std::env::var("BUZZ_ADMIN_PUBKEYS").ok();
+                if auth_mode != "nip98" {
+                    if admin_pubkeys_raw.is_some() {
+                        tracing::warn!(
+                            "BUZZ_ADMIN_PUBKEYS is set but BUZZ_ADMIN_AUTH is not \"nip98\" — \
+                             the value is ignored"
+                        );
+                    }
+                }
+                let admin_pubkeys: Vec<String> = if auth_mode == "nip98" {
+                    let raw = admin_pubkeys_raw.unwrap_or_default();
+                    let mut pubkeys = Vec::new();
+                    for entry in raw.split(',') {
+                        let entry = entry.trim().to_lowercase();
+                        if entry.is_empty() {
+                            continue;
+                        }
+                        let valid =
+                            entry.len() == 64 && entry.chars().all(|c| c.is_ascii_hexdigit());
+                        if !valid {
+                            return Err(ConfigError::InvalidValue(format!(
+                                "BUZZ_ADMIN_PUBKEYS entry is not a valid 64-char hex pubkey: \
+                                 {entry:?}"
+                            )));
+                        }
+                        if !pubkeys.contains(&entry) {
+                            pubkeys.push(entry);
+                        }
+                    }
+                    if pubkeys.is_empty() {
+                        return Err(ConfigError::InvalidValue(
+                            "BUZZ_ADMIN_PUBKEYS must be a non-empty comma-separated list of \
+                             64-char hex pubkeys when BUZZ_ADMIN_AUTH=nip98"
+                                .to_string(),
+                        ));
+                    }
+                    pubkeys
+                } else {
+                    Vec::new()
+                };
+
+                // BUZZ_ADMIN_TOKEN set in nip98 or disabled mode is ambiguous intent; fail
+                // closed.
+                if auth_mode != "token" && std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "BUZZ_ADMIN_TOKEN is set but BUZZ_ADMIN_AUTH is \"{auth_mode}\" — \
+                         BUZZ_ADMIN_TOKEN is only used in token mode; set one or the other"
+                    )));
                 }
 
-                let auth = if insecure_no_auth {
-                    tracing::warn!(
-                        "BUZZ_ADMIN_INSECURE_NO_AUTH=true — the admin API is \
-                         unauthenticated; the operator has asserted that access is \
-                         controlled at the network layer (reverse proxy, VPN, firewall)"
-                    );
-                    AdminAuth::InsecureNoAuth
-                } else {
-                    AdminAuth::Token(parse_admin_token()?)
+                let auth = match auth_mode {
+                    "disabled" => {
+                        tracing::warn!(
+                            "BUZZ_ADMIN_AUTH=disabled — the admin API is \
+                             unauthenticated; the operator has asserted that access is \
+                             controlled at the network layer (reverse proxy, VPN, firewall)"
+                        );
+                        AdminAuth::Disabled
+                    }
+                    "nip98" => AdminAuth::Nip98 {
+                        pubkeys: admin_pubkeys,
+                    },
+                    _ => AdminAuth::Token(parse_admin_token()?),
                 };
 
                 let web_dir = std::env::var("BUZZ_ADMIN_WEB_DIR")
@@ -1181,10 +1247,11 @@ mod tests {
     /// Run `Config::from_env()` with the admin variables forced to `values`,
     /// restoring the ambient environment afterwards.
     fn config_with_admin_env(values: &[(&str, Option<&str>)]) -> Result<Config, ConfigError> {
-        const KEYS: [&str; 3] = [
+        const KEYS: [&str; 4] = [
             "BUZZ_ADMIN_HOST",
             "BUZZ_ADMIN_TOKEN",
-            "BUZZ_ADMIN_INSECURE_NO_AUTH",
+            "BUZZ_ADMIN_AUTH",
+            "BUZZ_ADMIN_PUBKEYS",
         ];
         let previous: Vec<_> = KEYS
             .iter()
@@ -1313,55 +1380,62 @@ mod tests {
     }
 
     #[test]
-    fn insecure_no_auth_activates_without_a_token() {
+    fn disabled_mode_activates_without_a_token() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_TOKEN", None),
-            ("BUZZ_ADMIN_INSECURE_NO_AUTH", Some("true")),
+            ("BUZZ_ADMIN_AUTH", Some("disabled")),
         ])
-        .expect("insecure_no_auth without a token is valid")
+        .expect("disabled mode without a token is valid")
         .admin
         .expect("admin surface is configured");
         assert_eq!(admin.host, "admin.example");
-        assert!(matches!(
-            admin.auth,
-            crate::config::AdminAuth::InsecureNoAuth
-        ));
+        assert!(matches!(admin.auth, crate::config::AdminAuth::Disabled));
     }
 
     #[test]
-    fn insecure_no_auth_and_token_both_set_fails_closed() {
+    fn disabled_mode_and_token_both_set_fails_closed() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let result = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ("BUZZ_ADMIN_INSECURE_NO_AUTH", Some("true")),
+            ("BUZZ_ADMIN_AUTH", Some("disabled")),
         ]);
         assert!(
             matches!(
                 result,
                 Err(ConfigError::InvalidValue(ref message))
-                    if message.contains("mutually exclusive")
+                    if message.contains("BUZZ_ADMIN_TOKEN")
+                       && message.contains("disabled")
             ),
             "both set must be a startup error: {result:?}"
         );
     }
 
     #[test]
-    fn insecure_no_auth_junk_values_all_fail_closed() {
+    fn admin_auth_junk_values_all_fail_closed() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        for junk in ["1", "yes", "TRUE", "True", "false", "0", "on"] {
+        for junk in [
+            "1",
+            "yes",
+            "TRUE",
+            "True",
+            "false",
+            "0",
+            "on",
+            "insecure_no_auth",
+        ] {
             let result = config_with_admin_env(&[
                 ("BUZZ_ADMIN_HOST", Some("admin.example")),
                 ("BUZZ_ADMIN_TOKEN", None),
-                ("BUZZ_ADMIN_INSECURE_NO_AUTH", Some(junk)),
+                ("BUZZ_ADMIN_AUTH", Some(junk)),
             ]);
             assert!(
                 matches!(
                     result,
                     Err(ConfigError::InvalidValue(ref message))
-                        if message.contains("BUZZ_ADMIN_INSECURE_NO_AUTH")
+                        if message.contains("BUZZ_ADMIN_AUTH")
                 ),
                 "{junk:?} must be rejected: {result:?}"
             );
@@ -1369,14 +1443,14 @@ mod tests {
     }
 
     #[test]
-    fn insecure_no_auth_empty_string_is_treated_as_unset() {
-        // An empty value (e.g. `BUZZ_ADMIN_INSECURE_NO_AUTH=`) behaves exactly
-        // like absence — the operator must set a token or the relay fails closed.
+    fn admin_auth_empty_string_is_treated_as_token_mode() {
+        // An empty value (e.g. `BUZZ_ADMIN_AUTH=`) is treated as unset → token mode.
+        // Token mode without a token fails closed with a BUZZ_ADMIN_TOKEN error.
         let _guard = ENV_MUTEX.lock().unwrap();
         let result = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_TOKEN", None),
-            ("BUZZ_ADMIN_INSECURE_NO_AUTH", Some("")),
+            ("BUZZ_ADMIN_AUTH", Some("")),
         ]);
         assert!(
             matches!(
@@ -1384,7 +1458,105 @@ mod tests {
                 Err(ConfigError::InvalidValue(ref message))
                     if message.contains("BUZZ_ADMIN_TOKEN")
             ),
-            "empty BUZZ_ADMIN_INSECURE_NO_AUTH should fall through to the token requirement"
+            "empty BUZZ_ADMIN_AUTH should fall through to the token requirement"
+        );
+    }
+
+    #[test]
+    fn admin_auth_explicit_token_mode_behaves_identically_to_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let admin = config_with_admin_env(&[
+            ("BUZZ_ADMIN_HOST", Some("admin.example")),
+            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
+            ("BUZZ_ADMIN_AUTH", Some("token")),
+        ])
+        .expect("explicit token mode with a valid token is valid")
+        .admin
+        .expect("admin surface is configured");
+        assert!(matches!(admin.auth, crate::config::AdminAuth::Token(_)));
+    }
+
+    #[test]
+    fn nip98_mode_parses_pubkeys_and_deduplicates() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let pubkey_a = "a".repeat(64);
+        let pubkey_b = "b".repeat(64);
+        let admin = config_with_admin_env(&[
+            ("BUZZ_ADMIN_HOST", Some("admin.example")),
+            ("BUZZ_ADMIN_AUTH", Some("nip98")),
+            (
+                "BUZZ_ADMIN_PUBKEYS",
+                Some(&format!("{pubkey_a},{pubkey_b},{pubkey_a}")),
+            ),
+        ])
+        .expect("nip98 mode with valid pubkeys is valid")
+        .admin
+        .expect("admin surface is configured");
+        match admin.auth {
+            crate::config::AdminAuth::Nip98 { ref pubkeys } => {
+                assert_eq!(pubkeys, &[pubkey_a, pubkey_b]);
+            }
+            other => panic!("expected Nip98, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nip98_mode_requires_nonempty_pubkeys() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        for pubkeys in [None, Some(""), Some("  ,  ")] {
+            let result = config_with_admin_env(&[
+                ("BUZZ_ADMIN_HOST", Some("admin.example")),
+                ("BUZZ_ADMIN_AUTH", Some("nip98")),
+                ("BUZZ_ADMIN_PUBKEYS", pubkeys),
+            ]);
+            assert!(
+                matches!(
+                    result,
+                    Err(ConfigError::InvalidValue(ref message))
+                        if message.contains("BUZZ_ADMIN_PUBKEYS")
+                ),
+                "{pubkeys:?} must be rejected: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nip98_mode_rejects_invalid_pubkey_entries() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        for bad in ["not-a-pubkey", &"a".repeat(63), &"z".repeat(64)] {
+            let result = config_with_admin_env(&[
+                ("BUZZ_ADMIN_HOST", Some("admin.example")),
+                ("BUZZ_ADMIN_AUTH", Some("nip98")),
+                ("BUZZ_ADMIN_PUBKEYS", Some(bad)),
+            ]);
+            assert!(
+                matches!(
+                    result,
+                    Err(ConfigError::InvalidValue(ref message))
+                        if message.contains("BUZZ_ADMIN_PUBKEYS")
+                ),
+                "{bad:?} must be rejected: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nip98_mode_and_token_both_set_fails_closed() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let result = config_with_admin_env(&[
+            ("BUZZ_ADMIN_HOST", Some("admin.example")),
+            ("BUZZ_ADMIN_AUTH", Some("nip98")),
+            ("BUZZ_ADMIN_PUBKEYS", Some(&"a".repeat(64))),
+            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
+        ]);
+        assert!(
+            matches!(
+                result,
+                Err(ConfigError::InvalidValue(ref message))
+                    if message.contains("BUZZ_ADMIN_TOKEN")
+                       && message.contains("nip98")
+            ),
+            "nip98 + token must be a startup error: {result:?}"
         );
     }
 
