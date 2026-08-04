@@ -28,6 +28,7 @@ import {
   filterBakedGenericRows,
 } from "@/features/agents/lib/agentConfigCore";
 import {
+  bakedStructuredKeys,
   getBakedProviderInheritLabel,
   getGlobalModelFallback,
 } from "@/features/agents/ui/bakedEnvHelpers";
@@ -69,12 +70,6 @@ export const EMPTY_GLOBAL_CONFIG: GlobalAgentConfig = {
   model: null,
   preferred_runtime: null,
 };
-
-const BAKED_STRUCTURED_KEYS = new Set([
-  "BUZZ_AGENT_PROVIDER",
-  "BUZZ_AGENT_MODEL",
-  BUZZ_AGENT_THINKING_EFFORT,
-]);
 
 const PROGRESSIVE_FIELDS_TRANSITION = {
   duration: 0.22,
@@ -262,10 +257,15 @@ export function AgentConfigFields({
         d.kind === "maxRounds") &&
       d.render === "control",
   );
-  const allStructuredKeys = structuredEnvKeys([
-    ...(effortField ? [effortField] : []),
-    ...numericDescriptors,
-  ]);
+  const allStructuredKeys = React.useMemo(() => {
+    const keys = structuredEnvKeys([
+      ...(effortField ? [effortField] : []),
+      ...numericDescriptors,
+    ]);
+    if (effortField?.legacyConsumedKey)
+      keys.push(effortField.legacyConsumedKey);
+    return keys;
+  }, [effortField, numericDescriptors]);
   const bakedEnvMap = Object.fromEntries(bakedEnv.map((e) => [e.key, e.value]));
   const bakedProvider = React.useMemo(
     () => bakedEnv.find((e) => e.key === "BUZZ_AGENT_PROVIDER")?.value ?? null,
@@ -295,16 +295,18 @@ export function AgentConfigFields({
     fallbackModel !== null;
   const bakedEffort = React.useMemo(
     () =>
-      bakedEnv.find((e) => e.key === BUZZ_AGENT_THINKING_EFFORT)?.value ?? null,
-    [bakedEnv],
+      bakedEnv.find(
+        (e) => e.key === (effortPersistenceKey ?? BUZZ_AGENT_THINKING_EFFORT),
+      )?.value ?? null,
+    [bakedEnv, effortPersistenceKey],
   );
   const bakedGenericRows = React.useMemo<readonly InheritedEnvRow[]>(
     () =>
       filterBakedGenericRows(bakedEnv, [
-        ...BAKED_STRUCTURED_KEYS,
+        ...bakedStructuredKeys(effortPersistenceKey ?? undefined),
         ...allStructuredKeys,
       ]),
-    [bakedEnv, allStructuredKeys],
+    [bakedEnv, allStructuredKeys, effortPersistenceKey],
   );
 
   const providerValue = providerFieldVisible ? (config.provider ?? "") : "";
@@ -383,12 +385,8 @@ export function AgentConfigFields({
     showCustomModelOption,
   });
 
-  // Mount-time healing policy: onboarding page 4 edits the root config during
-  // first-run (no higher layers to inherit from), so acting on open is safe
-  // and intentional there — it heals stale state and picks a valid model.
-  // Evergreen surfaces (Settings, dialogs) edit saved data that may pair with
-  // higher layers (see PR #2148 review thread), so they only act after the
-  // user explicitly edits the provider in this session.
+  // Mount-time healing (onboarding page 4 only). Evergreen surfaces wait for
+  // explicit provider edit (see PR #2148).
   const healOnMount =
     fieldModel.dependentValuePolicy.onCatalogMismatch === "onboardingCleanup";
   const userEditedProviderRef = React.useRef(false);
@@ -463,6 +461,7 @@ export function AgentConfigFields({
 
     const nextEnvVars = { ...config.env_vars };
     if (effortPersistenceKey) delete nextEnvVars[effortPersistenceKey];
+    delete nextEnvVars[BUZZ_AGENT_THINKING_EFFORT];
     onCustomModelEditingChange(false);
     onConfigChange({ ...config, env_vars: nextEnvVars, model: null });
   }, [
@@ -498,6 +497,7 @@ export function AgentConfigFields({
 
     const nextEnvVars = { ...config.env_vars };
     if (effortPersistenceKey) delete nextEnvVars[effortPersistenceKey];
+    delete nextEnvVars[BUZZ_AGENT_THINKING_EFFORT];
     onCustomModelEditingChange(false);
     onConfigChange({ ...config, env_vars: nextEnvVars, model: null });
   }, [
@@ -518,6 +518,7 @@ export function AgentConfigFields({
     onClear: () => {
       const nextEnvVars = { ...config.env_vars };
       if (effortPersistenceKey) delete nextEnvVars[effortPersistenceKey];
+      delete nextEnvVars[BUZZ_AGENT_THINKING_EFFORT];
       onConfigChange({ ...config, env_vars: nextEnvVars });
     },
   });
@@ -875,9 +876,13 @@ export function AgentConfigFields({
               if (value === "") {
                 if (effortPersistenceKey)
                   delete nextEnvVars[effortPersistenceKey];
+                delete nextEnvVars[BUZZ_AGENT_THINKING_EFFORT];
               } else {
                 if (effortPersistenceKey)
                   nextEnvVars[effortPersistenceKey] = value;
+                if (effortPersistenceKey !== BUZZ_AGENT_THINKING_EFFORT) {
+                  delete nextEnvVars[BUZZ_AGENT_THINKING_EFFORT];
+                }
               }
               onConfigChange({ ...config, env_vars: nextEnvVars });
             }}

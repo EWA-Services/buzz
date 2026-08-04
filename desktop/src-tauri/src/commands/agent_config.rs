@@ -216,18 +216,23 @@ pub struct BakedEnvEntry {
 ///
 /// Allowlist (case-insensitive):
 /// - `BUZZ_AGENT_PROVIDER`, `BUZZ_AGENT_MODEL` — agent runtime selection
-/// - `BUZZ_AGENT_THINKING_EFFORT` — non-secret enum (none/minimal/low/medium/high/xhigh/max)
+/// - All known native thinking-effort keys (non-secret enum values) — derived
+///   from `ALL_KNOWN_EFFORT_KEYS` so this list stays in sync with runtime
+///   metadata declarations (`BUZZ_AGENT_THINKING_EFFORT`, `GOOSE_THINKING_EFFORT`).
 /// - `DATABRICKS_HOST`, `DATABRICKS_MODEL` — Block non-secret defaults
 fn is_safe_to_reveal(key: &str) -> bool {
+    use crate::managed_agents::config_bridge::ALL_KNOWN_EFFORT_KEYS;
     const SAFE_KEYS: &[&str] = &[
         "BUZZ_AGENT_PROVIDER",
         "BUZZ_AGENT_MODEL",
-        "BUZZ_AGENT_THINKING_EFFORT",
         "DATABRICKS_HOST",
         "DATABRICKS_MODEL",
     ];
     let upper = key.to_ascii_uppercase();
     SAFE_KEYS.iter().any(|safe| upper == *safe)
+        || ALL_KNOWN_EFFORT_KEYS
+            .iter()
+            .any(|effort| upper == effort.to_ascii_uppercase())
 }
 
 /// Expose the baked build env to the frontend with values shown, but any

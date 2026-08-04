@@ -36,6 +36,7 @@ import {
   countNonSecretInheritedEnvVars,
   getBakedModelInheritLabel,
   getAdvancedInheritedSummary,
+  bakedStructuredKeys,
   getGlobalModelFallback,
   getInheritedAgentDefaults,
   getBakedProviderInheritLabel,
@@ -1441,4 +1442,132 @@ test("inherited defaults expose a provider-specific model fallback to agent dial
     source: "build",
     value: "goose-claude-opus-4-8",
   });
+});
+
+// ── Baked effort: native-only for non-buzz-agent runtimes ─────────────────
+//
+// Plan v3 Delta 4: baked legacy key (BUZZ_AGENT_THINKING_EFFORT) must NOT be
+// shown as Goose inherited effort. Only the native key is honoured at the baked tier.
+// Paired with the ★ baked-unmasking pin from pass-3.
+
+test("baked_legacy_effort_excluded_for_goose_runtime", () => {
+  // Baked env has BUZZ_AGENT_THINKING_EFFORT=high but NOT GOOSE_THINKING_EFFORT.
+  // For a Goose runtime, the baked legacy key must not seed inherited effort.
+  const defaults = getInheritedAgentDefaults(
+    { env_vars: {}, provider: null, model: null },
+    [{ key: "BUZZ_AGENT_THINKING_EFFORT", value: "high", masked: false }],
+    { nativeEffortKey: "GOOSE_THINKING_EFFORT" },
+  );
+  assert.deepEqual(
+    defaults.effort,
+    { source: null, value: "" },
+    "baked legacy must not seed Goose inherited effort",
+  );
+});
+
+test("baked_native_effort_included_for_goose_runtime", () => {
+  // Baked env has GOOSE_THINKING_EFFORT=medium. For a Goose runtime, the baked
+  // native key must seed inherited effort (★ baked unmasking pin: value usable,
+  // not ••••••).
+  const defaults = getInheritedAgentDefaults(
+    { env_vars: {}, provider: null, model: null },
+    [{ key: "GOOSE_THINKING_EFFORT", value: "medium", masked: false }],
+    { nativeEffortKey: "GOOSE_THINKING_EFFORT" },
+  );
+  assert.deepEqual(
+    defaults.effort,
+    { source: "build", value: "medium" },
+    "baked native must seed Goose inherited effort",
+  );
+});
+
+test("baked_masked_native_effort_excluded_from_inherited_defaults", () => {
+  // A masked baked value (•••) must not be treated as a real inherited effort.
+  // (★ baked unmasking pin: masked ••••••must never read as a real inherited value.)
+  const defaults = getInheritedAgentDefaults(
+    { env_vars: {}, provider: null, model: null },
+    [{ key: "GOOSE_THINKING_EFFORT", value: "••••••", masked: true }],
+    { nativeEffortKey: "GOOSE_THINKING_EFFORT" },
+  );
+  assert.deepEqual(
+    defaults.effort,
+    { source: null, value: "" },
+    "masked baked value must not seed inherited effort",
+  );
+});
+
+// ── bakedStructuredKeys: runtime-sensitive hidden-key set ─────────────────
+
+test("bakedStructuredKeys_with_native_effort_key_hides_both_fixed_and_native", () => {
+  const keys = bakedStructuredKeys("GOOSE_THINKING_EFFORT");
+  assert.ok(
+    keys.has("BUZZ_AGENT_PROVIDER"),
+    "BUZZ_AGENT_PROVIDER always hidden",
+  );
+  assert.ok(keys.has("BUZZ_AGENT_MODEL"), "BUZZ_AGENT_MODEL always hidden");
+  assert.ok(keys.has("GOOSE_THINKING_EFFORT"), "native effort key hidden");
+  assert.equal(
+    keys.has("BUZZ_AGENT_THINKING_EFFORT"),
+    false,
+    "legacy key NOT hidden for Goose (global legacy stays as advanced row)",
+  );
+});
+
+test("bakedStructuredKeys_without_native_effort_key_hides_only_fixed", () => {
+  const keys = bakedStructuredKeys(undefined);
+  assert.ok(keys.has("BUZZ_AGENT_PROVIDER"));
+  assert.ok(keys.has("BUZZ_AGENT_MODEL"));
+  assert.equal(keys.has("GOOSE_THINKING_EFFORT"), false);
+  assert.equal(keys.has("BUZZ_AGENT_THINKING_EFFORT"), false);
+});
+
+// ── getInheritedAgentDefaults: global-tier legacy exclusion + normalization ─
+//
+// Plan v3 Delta 4: global legacy is never consumed as structured effort.
+// Plan v3 Delta 1: global native value normalized before display.
+
+test("global_legacy_effort_ignored_for_goose_in_inherited_defaults", () => {
+  // Global config has only the legacy key (BUZZ_AGENT_THINKING_EFFORT=high).
+  // For a Goose runtime, that key is buzz-agent's native key (Delta 5) and must
+  // NOT seed the inherited effort display — mirrors effort_tier_alias(global_tier=true).
+  const defaults = getInheritedAgentDefaults(
+    {
+      env_vars: { BUZZ_AGENT_THINKING_EFFORT: "high" },
+      provider: null,
+      model: null,
+    },
+    undefined,
+    {
+      nativeEffortKey: "GOOSE_THINKING_EFFORT",
+      acceptedEffortValues: ["off", "low", "medium", "high", "max"],
+    },
+  );
+  assert.deepEqual(
+    defaults.effort,
+    { source: null, value: "" },
+    "global legacy key must not seed Goose inherited effort",
+  );
+});
+
+test("global_native_xhigh_normalizes_to_max_for_goose_in_inherited_defaults", () => {
+  // Global config has GOOSE_THINKING_EFFORT=xhigh (an accepted Goose alias).
+  // Must be normalized to canonical "max" before display, consistent with the
+  // Rust display path where xhigh → max via acceptedEffortValues (Delta 1).
+  const defaults = getInheritedAgentDefaults(
+    {
+      env_vars: { GOOSE_THINKING_EFFORT: "xhigh" },
+      provider: null,
+      model: null,
+    },
+    undefined,
+    {
+      nativeEffortKey: "GOOSE_THINKING_EFFORT",
+      acceptedEffortValues: ["off", "low", "medium", "high", "max"],
+    },
+  );
+  assert.deepEqual(
+    defaults.effort,
+    { source: "global", value: "max" },
+    "global native xhigh must normalize to canonical max",
+  );
 });
