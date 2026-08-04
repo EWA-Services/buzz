@@ -407,6 +407,10 @@ class ComposeBar extends HookConsumerWidget {
           uploadingCount.value > 0) {
         return;
       }
+      // Resolved before any await: a community switch mid-send rebuilds the
+      // composer and resets its own error state, so the messenger is the only
+      // surface that survives to report the failure.
+      final messenger = ScaffoldMessenger.maybeOf(context);
 
       // Extract pubkeys for mentions present in the final text.
       final selectedMentions = <MentionCandidate>[
@@ -500,18 +504,31 @@ class ComposeBar extends HookConsumerWidget {
       isSending.value = true;
       try {
         if (queuedAttachments.isEmpty) {
-          await addMentionedNonMembers();
-          final payload = _ComposeDraftPayload.fromDraft(
-            text: text,
-            attachments: const [],
-            customEmoji: customEmoji,
-          );
-          await onSend(
-            payload.content,
-            mentionPubkeys,
-            mediaTags: [...payload.mediaTags, ...referenceMentionTags],
-          );
-          if (context.mounted) clearComposer();
+          try {
+            await addMentionedNonMembers();
+            final payload = _ComposeDraftPayload.fromDraft(
+              text: text,
+              attachments: const [],
+              customEmoji: customEmoji,
+            );
+            await onSend(
+              payload.content,
+              mentionPubkeys,
+              mediaTags: [...payload.mediaTags, ...referenceMentionTags],
+            );
+            if (context.mounted) clearComposer();
+          } on StateError {
+            // The active community changed mid-send, so this message can no
+            // longer be delivered where it was composed. Report it: the send
+            // path is fire-and-forget, so an escaping error would be silent.
+            // The composer's own error line cannot carry this, because the
+            // identity change resets that state on the next frame.
+            messenger?.showSnackBar(
+              const SnackBar(
+                content: Text('Message not sent: the community changed'),
+              ),
+            );
+          }
           return;
         }
 

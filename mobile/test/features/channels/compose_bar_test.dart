@@ -323,14 +323,22 @@ class _RecordingRelaySocket extends RelaySocket {
   final List<Map<String, dynamic>> events;
   final void Function(List<dynamic> message) handleMessage;
 
-  _RecordingRelaySocket(this.events, this.handleMessage)
-    : super(
-        wsUrl: 'ws://localhost',
-        nsec: null,
-        onMessage: handleMessage,
-        onConnected: () {},
-        onDisconnected: (_) {},
-      );
+  /// Invoked after an event has been recorded and acknowledged, before the
+  /// caller's `await` resumes. Lets a test interleave state changes (such as
+  /// a community switch) between two relay round trips.
+  final void Function(Map<String, dynamic> event)? onEventAcknowledged;
+
+  _RecordingRelaySocket(
+    this.events,
+    this.handleMessage, {
+    this.onEventAcknowledged,
+  }) : super(
+         wsUrl: 'ws://localhost',
+         nsec: null,
+         onMessage: handleMessage,
+         onConnected: () {},
+         onDisconnected: (_) {},
+       );
 
   @override
   SocketState get state => SocketState.connected;
@@ -341,6 +349,7 @@ class _RecordingRelaySocket extends RelaySocket {
       events.add(event);
       final id = event['id'] as String;
       super.debugHandleOkForTest(['OK', id, true, '']);
+      onEventAcknowledged?.call(event);
     }
   }
 
@@ -1934,6 +1943,94 @@ void main() {
         expect(sent, isFalse);
       },
     );
+
+    testWidgets('surfaces an error and keeps the draft when a community switch '
+        'cancels a text-only send', (tester) async {
+      final agentPubkey = 'c' * 64;
+      final signer = nostr.Keys.generate();
+      final publishedEvents = <Map<String, dynamic>>[];
+      var sendCount = 0;
+
+      await tester.pumpWidget(
+        _buildComposeBar(
+          uploadService: _testUploadService(signer.nsec),
+          currentPubkey: signer.public,
+          relayAgents: [_testAgent(agentPubkey)],
+          channels: [_makeCurrentChannel(), _makeSharedMemberChannel()],
+          relayConfig: () => _SwitchableRelayConfigNotifier(
+            RelayConfig(baseUrl: 'https://relay.example', nsec: signer.nsec),
+          ),
+          onSend: (_, _, {mediaTags = const <List<String>>[]}) async {
+            sendCount += 1;
+          },
+        ),
+      );
+
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ComposeBar)),
+      );
+      final session = container.read(relaySessionProvider.notifier);
+      // Switch community the moment the agent's kind:9000 add is
+      // acknowledged. That is the only window in which the guard can fire:
+      // everything before the first relay round trip runs in the same
+      // microtask as the ChannelActions read.
+      session.debugAttachSocketForTest(
+        _RecordingRelaySocket(
+          publishedEvents,
+          session.debugHandleSocketMessageForTest,
+          onEventAcknowledged: (event) {
+            if (event['kind'] != 9000) return;
+            container
+                .read(relayConfigProvider.notifier)
+                .update(baseUrl: 'https://other.example', nsec: signer.nsec);
+          },
+        ),
+      );
+
+      await _expandComposer(tester);
+      await tester.enterText(find.byType(TextField), '@hel');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Helper Bot'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'hello @Helper Bot');
+      await tester.tap(find.byIcon(LucideIcons.arrowUp));
+      await tester.pumpAndSettle();
+
+      // The cancelled send must not reach the relay.
+      expect(sendCount, 0);
+      // The escaped StateError itself is pinned by flutter_test's own
+      // unhandled-exception reporting, which fails this test if the error
+      // is not caught. Deliberately no `takeException()` row: the framework
+      // has already consumed the error by this point, so such a row reads
+      // null whether or not the error escaped, and would never fail.
+      //
+      // What needs pinning is the user-visible half. The composer's own
+      // error line cannot carry it, because the same identity change resets
+      // that state on the very next frame, so the surface must outlive the
+      // switch.
+      expect(
+        find.widgetWithText(
+          SnackBar,
+          'Message not sent: the community changed',
+        ),
+        findsOneWidget,
+      );
+      // Characterization, not a fix: the unsent text is already retained in
+      // the originating community's own draft store (the send path never
+      // reaches `clearComposer`, and the persist listener wrote it while
+      // typing), so it is waiting when the user switches back. This row
+      // holds without the catch above and exists to keep it that way.
+      final storedDrafts = _testPrefs.getString(
+        'compose_drafts_v1:https://relay.example:${signer.public}',
+      );
+      expect(storedDrafts, isNotNull);
+      expect(
+        (jsonDecode(storedDrafts!) as List)
+            .map((d) => (d as Map<String, dynamic>)['text'])
+            .toList(),
+        contains('hello @Helper Bot'),
+      );
+    });
 
     testWidgets(
       'stale channel actions cannot invite after a community switch',
