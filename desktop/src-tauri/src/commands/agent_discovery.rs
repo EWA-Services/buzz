@@ -531,8 +531,7 @@ async fn restart_single_agent_after_install(
     let runtime_id_owned = runtime_id.to_string();
 
     let stop_result = tokio::task::spawn_blocking(move || {
-        let app_for_state = app_for_stop.clone();
-        let state = app_for_state.state::<AppState>();
+        let state = app_for_stop.state::<AppState>();
 
         let store_guard = state
             .managed_agents_store_lock
@@ -543,13 +542,13 @@ async fn restart_single_agent_after_install(
             .managed_agent_processes
             .lock()
             .map_err(|e| format!("failed to acquire runtimes lock: {e}"))?;
-        let instance_id = current_instance_id(&app_for_stop);
 
         let app_for_closure = app_for_stop.clone();
         let (runtime_keys, _guard) = mutate_agent_store(
             &app_for_stop,
             store_guard,
             move |mut records, _journal| {
+                let instance_id = current_instance_id(&app_for_closure);
                 // Sync process state so PID liveness reflects current reality.
                 sync_managed_agent_processes(&mut records, &mut runtimes, &instance_id);
 
@@ -565,9 +564,7 @@ async fn restart_single_agent_after_install(
                 let runtime_keys =
                     crate::managed_agents::managed_agent_runtime_keys(&runtimes, &pubkey_owned);
                 if runtime_keys.is_empty() {
-                    return Err(format!(
-                        "agent {pubkey_owned} no longer has a live pair runtime after sync"
-                    ));
+                    return Err(format!("agent {pubkey_owned} no longer has a live pair runtime after sync"));
                 }
 
                 let personas = load_personas(&app_for_closure).unwrap_or_default();
@@ -588,9 +585,7 @@ async fn restart_single_agent_after_install(
                     .map(|(_, p)| p.setup_mode)
                     .unwrap_or(false);
                 if !setup_mode {
-                    return Err(format!(
-                        "agent {pubkey_owned} is not in setup mode under lock — skipping"
-                    ));
+                    return Err(format!("agent {pubkey_owned} is not in setup mode under lock — skipping"));
                 }
 
                 let runtime_meta = known_acp_runtime(&effective_cmd);
