@@ -151,7 +151,11 @@ pub(crate) fn spawn_config_hash(
     }
     record.idle_timeout_seconds.hash(&mut hasher);
     record.max_turn_duration_seconds.hash(&mut hasher);
-    record.parallelism.hash(&mut hasher);
+    // Hash the effective parallelism so over-cap edits that don't change the
+    // running pool size (e.g. 10 → 8, both clamp to 5 on OpenClaw) do not
+    // raise a spurious "restart required" badge.
+    crate::managed_agents::effective_parallelism(&descriptor.command, record.parallelism)
+        .hash(&mut hasher);
 
     hasher.finish()
 }
