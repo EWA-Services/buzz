@@ -587,16 +587,15 @@ pub struct ManagedAgentLogResponse {
 pub enum AcpAvailabilityStatus {
     Available,
     AdapterMissing,
-    /// Adapter binary is present but is from the deprecated package (< 1.0). Reinstall required.
+    /// Adapter binary is present but unsupported — either the deprecated
+    /// package or a version below the supported floor. Reinstall required.
     AdapterOutdated,
     CliMissing,
     NotInstalled,
 }
 
-/// Authentication/login status for a CLI-based ACP runtime.
-///
-/// Serializes as a tagged union `{ status: "...", diagnostic?: "..." }` so
-/// the TypeScript side can exhaustively switch on `status`.
+/// Authentication/login status for a CLI-based ACP runtime. Serializes as a tagged union
+/// `{ status: "...", diagnostic?: "..." }` so the TypeScript side can exhaustively switch on `status`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum AuthStatus {
@@ -615,8 +614,7 @@ pub enum AuthStatus {
     Unknown,
 }
 
-/// Origin of an ACP runtime catalog entry. Serializes as a lowercase string
-/// so the TypeScript consumer can switch on it without numeric comparisons.
+/// Origin of an ACP runtime catalog entry. Serializes as a lowercase string so the TypeScript consumer can switch on it without numeric comparisons.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HarnessSource {
@@ -644,6 +642,9 @@ pub struct AcpRuntimeCatalogEntry {
     pub provider_env_var: Option<String>,
     /// Environment variable used to apply thinking effort, when supported.
     pub thinking_env_var: Option<String>,
+    pub max_tokens_env_var: Option<String>,
+    pub context_limit_env_var: Option<String>,
+    pub max_rounds_env_var: Option<String>,
     pub install_hint: String,
     pub install_instructions_url: String,
     /// true when at least one automated install step is available
@@ -701,6 +702,10 @@ pub struct InstallRuntimeResult {
     /// Number of agents whose stop succeeded but respawn failed.
     /// Mirrors `GlobalAgentConfigSaveResult.failed_restart_count`.
     pub failed_restart_count: u32,
+    /// Install log file for this run, when one was written. The UI surfaces it
+    /// on failure so a user can read the full retry history instead of only the
+    /// last step's truncated output. `None` when no log could be opened.
+    pub log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

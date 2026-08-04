@@ -8,6 +8,8 @@ mod egress_guard;
 mod event_sync;
 mod events;
 mod huddle;
+mod identity_storage;
+mod initial_window;
 mod key_backup;
 mod linux_media;
 mod managed_agents;
@@ -48,11 +50,13 @@ use huddle::audio_output::{
 };
 use huddle::reconnect::reconnect_huddle_audio;
 use huddle::{
-    add_agent_to_huddle, check_pipeline_hotstart, confirm_huddle_active, download_voice_models,
-    end_huddle, get_huddle_agent_pubkeys, get_huddle_state, get_model_status, get_voice_input_mode,
-    join_huddle, leave_huddle, push_audio_pcm, set_huddle_transcription_enabled, set_tts_enabled,
-    set_voice_input_mode, speak_agent_message, start_huddle, start_stt_pipeline,
+    add_agent_to_huddle, check_pipeline_hotstart, close_huddle_companion, confirm_huddle_active,
+    download_voice_models, end_huddle, get_huddle_agent_pubkeys, get_huddle_state,
+    get_model_status, get_voice_input_mode, join_huddle, leave_huddle, open_huddle_window,
+    push_audio_pcm, set_huddle_transcription_enabled, set_tts_enabled, set_voice_input_mode,
+    speak_agent_message, start_huddle, start_stt_pipeline, HuddlePhase,
 };
+use initial_window::*;
 use managed_agents::{
     backfill_persona_snapshots, ensure_nest, list_managed_agent_runtimes,
     put_managed_agent_runtime_lifecycle, reconcile_managed_agent_runtimes,
@@ -64,83 +68,13 @@ use mesh_llm_stubs::*;
 #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
 use shutdown::{hard_exit_after_mesh_shutdown, relaunch_after_mesh_shutdown};
 use shutdown::{is_restart_request, shut_down_app};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tauri::{Emitter, Manager, RunEvent};
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 #[cfg(target_os = "macos")]
-use tauri::{Listener, WindowEvent};
+use tauri::Listener;
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 #[cfg(target_os = "macos")]
 use tray_menu::show_main_window;
-
-#[cfg(target_os = "macos")]
-const INITIAL_RENDER_READY_EVENT: &str = "initial-render-ready";
-
-fn reveal_initial_window<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    if let Err(error) = window.show() {
-        eprintln!("buzz-desktop: failed to reveal main window: {error}");
-        return;
-    }
-    if let Err(error) = window.set_focus() {
-        eprintln!("buzz-desktop: failed to focus main window: {error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn set_initial_window_backing<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    // The window remains transparent at runtime for vibrancy. Use an opaque
-    // native backing only across the first visible frames so the previous app
-    // cannot show through before WebKit has submitted its first surface.
-    if let Err(error) = window.set_background_color(Some(tauri::window::Color(17, 21, 24, 255))) {
-        eprintln!("buzz-desktop: failed to set initial window backing: {error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn clear_initial_window_backing<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    if let Err(error) = window.set_background_color(None) {
-        eprintln!("buzz-desktop: failed to clear initial window backing: {error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn wait_for_stable_initial_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    const MAX_POLLS: usize = 120;
-    const REQUIRED_STABLE_POLLS: usize = 4;
-
-    let mut previous_bounds = None;
-    let mut stable_polls = 0;
-
-    for _ in 0..MAX_POLLS {
-        // Accept whatever geometry the window-state plugin restores — maximized
-        // or a normal saved size. macOS applies the restore asynchronously, so
-        // we only need consecutive identical outer bounds to know it settled.
-        // Gating on `is_maximized()` here would leave `bounds` permanently
-        // `None` for restored non-maximized windows and stall the reveal until
-        // the poll timeout.
-        let bounds = match (window.outer_position(), window.outer_size()) {
-            (Ok(position), Ok(size)) => Some((position.x, position.y, size.width, size.height)),
-            _ => None,
-        };
-
-        if bounds.is_some() && bounds == previous_bounds {
-            stable_polls += 1;
-            if stable_polls >= REQUIRED_STABLE_POLLS {
-                return;
-            }
-        } else {
-            stable_polls = 0;
-        }
-        previous_bounds = bounds;
-
-        tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-    }
-
-    eprintln!("buzz-desktop: initial window geometry did not settle before reveal timeout");
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -464,6 +398,18 @@ pub fn run() {
             // through every call site.
             if let Ok(mut guard) = state.app_handle.lock() {
                 *guard = Some(app_handle.clone());
+            }
+
+            let (tts_settings, tts_settings_load_error) =
+                huddle::tts_settings::load_for_app(&app_handle);
+            if let Ok(mut guard) = state.huddle_audio.tts.lock() {
+                *guard = tts_settings.clone();
+            }
+            if let Ok(mut guard) = state.huddle_audio.tts_load_error.lock() {
+                *guard = tts_settings_load_error;
+            }
+            if let Ok(mut huddle) = state.huddle_state.lock() {
+                huddle.tts_enabled = tts_settings.agent_text_to_speech;
             }
 
             // Bring up the runtime-owned shared-compute coordinator before
@@ -838,6 +784,12 @@ pub fn run() {
             update_team,
             delete_team,
             export_agent_snapshot,
+            card_mint_key_status,
+            card_mint_save_openai_key,
+            mint_agent_card,
+            save_agent_card,
+            list_agent_cards,
+            load_agent_card,
             preview_agent_snapshot_import,
             confirm_agent_snapshot_import,
             encode_agent_snapshot_for_send,
@@ -869,6 +821,8 @@ pub fn run() {
             leave_huddle,
             end_huddle,
             get_huddle_state,
+            close_huddle_companion,
+            open_huddle_window,
             push_audio_pcm,
             reconnect_huddle_audio,
             start_stt_pipeline,
@@ -876,8 +830,18 @@ pub fn run() {
             download_voice_models,
             get_model_status,
             set_tts_enabled,
+            huddle::tts_settings::get_tts_settings,
+            huddle::tts_settings::list_voice_registry,
+            huddle::tts_settings::set_pocket_voice,
+            huddle::tts_settings::preview_pocket_voice,
+            huddle::tts_settings::import_pocket_voice,
+            huddle::tts_settings::delete_pocket_voice,
+            huddle::agent_voice::ensure_huddle_agent_voice_settings,
+            huddle::agent_voice::set_huddle_agent_tts_enabled,
+            huddle::agent_voice::set_huddle_agent_voice,
             speak_agent_message,
             add_agent_to_huddle,
+            huddle::agents::sync_agents_to_active_huddle,
             check_pipeline_hotstart,
             confirm_huddle_active,
             perform_sidebar_default_haptic,
@@ -946,6 +910,29 @@ pub fn run() {
             if let Some(window) = app_handle.get_webview_window("main") {
                 if let Err(error) = window.hide() {
                     eprintln!("buzz-desktop: failed to hide main window: {error}");
+                }
+            }
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { .. },
+            ..
+        } if label.starts_with("huddle-") => {
+            let is_active_huddle_window =
+                app_handle
+                    .state::<AppState>()
+                    .huddle()
+                    .ok()
+                    .is_some_and(|huddle| {
+                        !matches!(huddle.phase, HuddlePhase::Idle | HuddlePhase::Leaving)
+                            && huddle
+                                .ephemeral_channel_id
+                                .as_deref()
+                                .is_some_and(|channel_id| label == format!("huddle-{channel_id}"))
+                    });
+            if is_active_huddle_window {
+                if let Err(error) = app_handle.emit("huddle-companion-returned", ()) {
+                    eprintln!("buzz-desktop: failed to restore huddle drawer: {error}");
                 }
             }
         }
