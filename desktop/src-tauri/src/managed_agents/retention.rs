@@ -73,7 +73,10 @@ pub fn scoped_retention_db_path(base_dir: &Path, relay_url: &str, owner_pubkey: 
 pub fn active_retention_scope(app: &AppHandle, state: &AppState) -> Result<RetentionScope, String> {
     let relay_url = crate::relay::relay_ws_url_with_override(state);
     let owner_keys = state.signing_keys()?;
-    let base_dir = super::managed_agents_base_dir(app)?;
+    // Use the B1 anchor directory so the retention DB lives alongside the journal
+    // and advisory lock. On BUZZ_SHARE_IDENTITY=1, the anchor is the canonical
+    // shared path; on standalone it is the same as managed_agents_base_dir.
+    let base_dir = crate::managed_agents::store_journal::store_anchor_dir(app)?;
     let db_path =
         scoped_retention_db_path(&base_dir, &relay_url, &owner_keys.public_key().to_hex());
     let parent = db_path
@@ -81,6 +84,30 @@ pub fn active_retention_scope(app: &AppHandle, state: &AppState) -> Result<Reten
         .ok_or_else(|| "retention scope path has no parent".to_string())?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create retention scope directory: {error}"))?;
+
+    // On first use of the anchor-based path, migrate from the old process-local path
+    // so no pending publications are silently dropped.
+    if !db_path.exists() {
+        let old_base = super::managed_agents_base_dir(app)?;
+        let old_path =
+            scoped_retention_db_path(&old_base, &relay_url, &owner_keys.public_key().to_hex());
+        if old_path.exists() {
+            if let Err(e) = std::fs::copy(&old_path, &db_path) {
+                eprintln!(
+                    "buzz-desktop: failed to migrate retention DB from {} to {}: {e}",
+                    old_path.display(),
+                    db_path.display()
+                );
+                // Fall back to the old path rather than losing publications.
+                return Ok(RetentionScope {
+                    db_path: old_path,
+                    relay_url,
+                    owner_keys,
+                });
+            }
+        }
+    }
+
     Ok(RetentionScope {
         db_path,
         relay_url,

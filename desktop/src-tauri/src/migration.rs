@@ -15,6 +15,7 @@
 //! discovery table. Ensures known providers always have their canonical
 //! `mcp_command`; unknown/custom agents are left untouched.
 
+use crate::managed_agents::store_journal::atomic_write_restricted_with_fsync as write_restricted;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -106,19 +107,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// agent restore. Ordering is load-bearing: `migrate_legacy_app_data_dir` must
 /// precede any disk read, and `sync_shared_agent_data` must precede
 /// `restore_managed_agents_on_launch` (which reads `managed-agents.json`).
-/// Identity-dependent migrations (persona/team event signing) run separately in
-/// boot setup after the persisted identity is resolved.
 ///
-/// # Ordering
-/// `sync_team_personas` is the sole writer of team-dir persona-runtime edits
-/// into `personas.json`/`teams.json`; it MUST run before every reader of those
-/// files. The pre-identity reader is `reconcile_provider_mcp_commands` (derives
-/// `mcp_command` from each persona's effective harness); the post-identity
-/// readers are `migrate_personas_to_events`/`migrate_teams_to_events` in
-/// [`crate::event_sync::run_event_sync`]. Sync touches only JSON (no owner
-/// keys, no `retention.db`), so it runs pre-identity here ahead of all
-/// readers — reader-first loses a launch (stale harness/`mcp_command` until
-/// the next boot).
+/// `sync_team_personas` runs before `reconcile_provider_mcp_commands` (and
+/// before event-sync readers) because it is the sole writer of team-dir
+/// persona/harness edits into `personas.json`/`teams.json`.
 pub fn run_boot_migrations(app: &tauri::AppHandle) {
     run_boot_migrations_inner(app, false);
 }
@@ -482,23 +474,16 @@ fn copy_file_over_generated_default(src: &Path, dst: &Path) -> std::io::Result<(
     std::fs::copy(src, dst).map(|_| ())
 }
 
-/// Read a JSON array of objects from `path`, apply `f` to each object,
-/// and write back with `atomic_write_restricted_with_fsync` if any mutation
-/// returned `true`.
-///
-/// Acquires the B1 advisory lock for `anchor` before reading/writing so this
-/// migration patch is serialized against concurrent processes.
+/// Read a JSON array of objects from `path`, apply `f` to each object, and
+/// write back atomically (advisory-locked) if any mutation returned `true`.
 fn patch_json_records(
     path: &Path,
     anchor: &Path,
     mut f: impl FnMut(&mut serde_json::Map<String, serde_json::Value>) -> bool,
 ) {
-    let _advisory = match crate::managed_agents::store_journal::JournalLockGuard::acquire(anchor) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("buzz-desktop: patch-json-records: failed to acquire advisory lock: {e}");
-            return;
-        }
+    let Ok(_advisory) = crate::managed_agents::store_journal::JournalLockGuard::acquire(anchor)
+    else {
+        return;
     };
     let Ok(content) = std::fs::read_to_string(path) else {
         return;
@@ -518,9 +503,7 @@ fn patch_json_records(
     }
     if changed {
         if let Ok(bytes) = serde_json::to_vec_pretty(&records) {
-            if let Err(e) = crate::managed_agents::store_journal::atomic_write_restricted_with_fsync(
-                path, &bytes,
-            ) {
+            if let Err(e) = write_restricted(path, &bytes) {
                 eprintln!("buzz-desktop: patch-json-records: {e}");
             }
         }
@@ -671,9 +654,7 @@ fn refresh_builtin_agent_avatars_in_file(
 
     if changed {
         if let Ok(bytes) = serde_json::to_vec_pretty(&records) {
-            if let Err(e) = crate::managed_agents::store_journal::atomic_write_restricted_with_fsync(
-                path, &bytes,
-            ) {
+            if let Err(e) = write_restricted(path, &bytes) {
                 eprintln!("buzz-desktop: refresh-builtin-agent-avatars: {e}");
             }
         }
@@ -845,18 +826,10 @@ pub fn sync_shared_agent_data(app: &tauri::AppHandle) {
         return;
     }
 
-    // Acquire the B1 advisory lock on the canonical agents anchor directory
-    // so this migration step is serialized against other boot processes that
-    // might simultaneously set up their symlinks or write to the store.
-    let canonical_agents_dir = canonical_dir.join("agents");
-    let _advisory = match crate::managed_agents::store_journal::JournalLockGuard::acquire(
-        &canonical_agents_dir,
-    ) {
-        Ok(guard) => guard,
-        Err(e) => {
-            eprintln!("buzz-desktop: shared-agent-sync: advisory lock failed: {e}");
-            return;
-        }
+    let Ok(_advisory) = crate::managed_agents::store_journal::JournalLockGuard::acquire(
+        &canonical_dir.join("agents"),
+    ) else {
+        return;
     };
 
     // Seed-up: if canonical is missing a shared file but a sibling instance

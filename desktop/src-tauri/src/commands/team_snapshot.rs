@@ -705,14 +705,13 @@ pub async fn confirm_team_snapshot_import(
         // Advance operation to committed after the file write.
         {
             let anchor = crate::managed_agents::store_journal::store_anchor_dir(&app)?;
-            if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-                let _ = crate::managed_agents::store_journal::advance_disposition(
-                    &journal,
-                    &op_id,
-                    &crate::managed_agents::store_journal::Disposition::Pending,
-                    &crate::managed_agents::store_journal::Disposition::Committed,
-                );
-            }
+            let journal = crate::managed_agents::store_journal::open_journal(&anchor)?;
+            crate::managed_agents::store_journal::advance_disposition(
+                &journal,
+                &op_id,
+                &crate::managed_agents::store_journal::Disposition::Pending,
+                &crate::managed_agents::store_journal::Disposition::Committed,
+            )?;
         }
 
         // Keyring cleanup is already handled by persist_agent_keys_pub inside

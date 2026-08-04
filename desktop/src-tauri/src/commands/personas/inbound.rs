@@ -7,9 +7,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     app_state::AppState,
     managed_agents::{
-        agent_events::ManagedAgentEventContent, load_personas, persona_events::persona_d_tag,
-        save_personas_locked, team_events::TeamEventContent, try_regenerate_nest, AgentDefinition,
-        ManagedAgentRecord, TeamRecord,
+        agent_events::ManagedAgentEventContent, persona_events::persona_d_tag,
+        team_events::TeamEventContent, try_regenerate_nest, AgentDefinition, ManagedAgentRecord,
+        TeamRecord,
     },
     util::now_iso,
 };
@@ -71,10 +71,9 @@ fn reconcile_inbound_persona_event_blocking(
 ) -> Result<(), String> {
     use crate::managed_agents::{
         agent_events::managed_agent_content_from_event,
-        load_managed_agents,
+        mutate_agent_store, mutate_persona_store,
         persona_events::persona_from_event,
         retention::{open_retention_db, retain_inbound_event, InboundOutcome, RetainedEvent},
-        save_managed_agents,
         storage::mutate_team_store,
         team_events::team_content_from_event,
     };
@@ -150,13 +149,11 @@ fn reconcile_inbound_persona_event_blocking(
 
     match kind {
         KIND_PERSONA => {
-            let mut personas = load_personas(&app)?;
-            // `inbound_persona` is `Some` for KIND_PERSONA (set above).
-            apply_inbound_persona(
-                &mut personas,
-                inbound_persona.expect("persona parsed above"),
-            );
-            let _guard = save_personas_locked(&app, store_guard, &personas)?;
+            let inbound_def = inbound_persona.expect("persona parsed above");
+            let ((), _guard) = mutate_persona_store(&app, store_guard, move |mut defs| {
+                apply_inbound_persona(&mut defs, inbound_def);
+                Ok((defs, ()))
+            })?;
         }
         KIND_TEAM => {
             let d_tag_for_closure = d_tag.clone();
@@ -167,13 +164,12 @@ fn reconcile_inbound_persona_event_blocking(
             })?;
         }
         KIND_MANAGED_AGENT => {
-            let mut agents = load_managed_agents(&app)?;
-            apply_inbound_managed_agent(
-                &mut agents,
-                &d_tag,
-                managed_agent_content_from_event(&event)?,
-            );
-            let _guard = save_managed_agents(&app, store_guard, &agents)?;
+            let d_tag_for_closure = d_tag.clone();
+            let content = managed_agent_content_from_event(&event)?;
+            let ((), _guard) = mutate_agent_store(&app, store_guard, move |mut instances, _j| {
+                apply_inbound_managed_agent(&mut instances, &d_tag_for_closure, content);
+                Ok((instances, ()))
+            })?;
         }
         _ => unreachable!("kind gated above"),
     }
@@ -241,12 +237,11 @@ fn reconcile_inbound_tombstone(
     state: &AppState,
 ) -> Result<(), String> {
     use crate::managed_agents::{
-        load_managed_agents,
+        mutate_agent_store, mutate_persona_store,
         retention::{
             open_retention_db, retain_inbound_event, tombstone_retention_d_tag, InboundOutcome,
             RetainedEvent,
         },
-        save_managed_agents,
         storage::mutate_team_store,
     };
     use buzz_core_pkg::kind::{KIND_DELETION, KIND_MANAGED_AGENT, KIND_PERSONA, KIND_TEAM};
@@ -295,9 +290,11 @@ fn reconcile_inbound_tombstone(
     // use: persona by `persona_d_tag`, team by `id`, managed-agent by `pubkey`.
     match target_kind {
         KIND_PERSONA => {
-            let mut personas = load_personas(app)?;
-            personas.retain(|record| persona_d_tag(record) != target_d_tag);
-            let _guard = save_personas_locked(app, store_guard, &personas)?;
+            let target_d_tag_for_closure = target_d_tag.clone();
+            let ((), _guard) = mutate_persona_store(app, store_guard, move |mut defs| {
+                defs.retain(|record| persona_d_tag(record) != target_d_tag_for_closure);
+                Ok((defs, ()))
+            })?;
         }
         KIND_TEAM => {
             let target_d_tag_for_closure = target_d_tag.clone();
@@ -307,9 +304,11 @@ fn reconcile_inbound_tombstone(
             })?;
         }
         KIND_MANAGED_AGENT => {
-            let mut agents = load_managed_agents(app)?;
-            agents.retain(|record| record.pubkey != target_d_tag);
-            let _guard = save_managed_agents(app, store_guard, &agents)?;
+            let target_d_tag_for_closure = target_d_tag.clone();
+            let ((), _guard) = mutate_agent_store(app, store_guard, move |mut instances, _j| {
+                instances.retain(|record| record.pubkey != target_d_tag_for_closure);
+                Ok((instances, ()))
+            })?;
         }
         _ => unreachable!("target kind gated above"),
     }

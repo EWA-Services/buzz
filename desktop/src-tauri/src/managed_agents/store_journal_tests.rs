@@ -654,3 +654,341 @@ fn test_two_threads_serialised_by_advisory_lock_via_journal() {
         "B must observe A's committed write under the advisory lock"
     );
 }
+
+// ── Restart / reopen: nonterminal operations recovered by actual recovery driver
+
+/// Verify that a nonterminal pending operation with no outbox evidence is
+/// advanced to Failed by run_boot_recovery_at (real journal close + reopen).
+#[test]
+fn test_boot_recovery_marks_no_evidence_op_failed_on_reopen() {
+    use super::run_boot_recovery_at;
+
+    let dir = tmp_dir();
+    let anchor = dir.path().to_path_buf();
+
+    // Phase 1: open journal, insert a pending op with no outbox evidence, then
+    // close the connection (simulating a crash before completion).
+    {
+        let journal = open_journal(&anchor).unwrap();
+        insert_operation(
+            &journal,
+            "op-crash-1",
+            "create_agent",
+            "key-crash",
+            Generation(0),
+        )
+        .unwrap();
+        // Connection dropped here — journal closed.
+    }
+
+    // Phase 2: run_boot_recovery_at opens a fresh connection (real reopen).
+    run_boot_recovery_at(&anchor).unwrap();
+
+    // Phase 3: verify the op was advanced to Failed (no outbox evidence).
+    let journal = open_journal(&anchor).unwrap();
+    let op = read_operation(&journal, "op-crash-1")
+        .unwrap()
+        .expect("op must still exist");
+    assert_eq!(
+        op.disposition,
+        Disposition::Failed,
+        "no-evidence op must be Failed after recovery"
+    );
+    // The operation must be terminal and excluded from future nonterminal reads.
+    assert!(op.disposition.is_terminal());
+    let remaining = read_nonterminal_operations(&journal).unwrap();
+    assert!(
+        remaining.iter().all(|o| o.operation_id != "op-crash-1"),
+        "failed op must not appear in nonterminal operations after recovery"
+    );
+}
+
+/// Verify that a pending op WITH an unpublished outbox event is left in its
+/// current (Pending) disposition so the flush loop can re-drive it.
+#[test]
+fn test_boot_recovery_leaves_pending_outbox_op_for_redriving() {
+    use super::run_boot_recovery_at;
+
+    let dir = tmp_dir();
+    let anchor = dir.path().to_path_buf();
+
+    // Phase 1: insert op + outbox event, then close.
+    {
+        let journal = open_journal(&anchor).unwrap();
+        insert_operation(&journal, "op-outbox-1", "publish", "key-pub", Generation(0)).unwrap();
+        insert_outbox_event(
+            &journal,
+            "ev-pub-1",
+            "op-outbox-1",
+            b"{\"id\":\"ev-pub-1\"}",
+        )
+        .unwrap();
+        // Connection dropped here.
+    }
+
+    // Phase 2: recovery.
+    run_boot_recovery_at(&anchor).unwrap();
+
+    // Phase 3: op must remain Pending (flush loop re-drives it).
+    let journal = open_journal(&anchor).unwrap();
+    let op = read_operation(&journal, "op-outbox-1")
+        .unwrap()
+        .expect("op must exist");
+    assert_eq!(
+        op.disposition,
+        Disposition::Pending,
+        "op with pending outbox must stay Pending for the flush loop"
+    );
+    let nonterminal = read_nonterminal_operations(&journal).unwrap();
+    assert!(
+        nonterminal.iter().any(|o| o.operation_id == "op-outbox-1"),
+        "op with pending outbox must appear in nonterminal list for flush loop"
+    );
+}
+
+/// Verify that a keyring_write op WITH an inbox pre-image is advanced to Failed
+/// (interrupted write detected; inline fallback re-migrates on next load).
+#[test]
+fn test_boot_recovery_keyring_write_with_inbox_marks_failed() {
+    use super::run_boot_recovery_at;
+
+    let dir = tmp_dir();
+    let anchor = dir.path().to_path_buf();
+
+    {
+        let journal = open_journal(&anchor).unwrap();
+        insert_operation(
+            &journal,
+            "op-kr-1",
+            "keyring_write",
+            "key-kr",
+            Generation(0),
+        )
+        .unwrap();
+        // Insert inbox pre-image (pubkey bytes).
+        insert_inbox_event(&journal, "in-kr-1", "op-kr-1", b"pubkey-bytes").unwrap();
+        // No outbox event — write was interrupted before completion.
+    }
+
+    run_boot_recovery_at(&anchor).unwrap();
+
+    let journal = open_journal(&anchor).unwrap();
+    let op = read_operation(&journal, "op-kr-1")
+        .unwrap()
+        .expect("op must exist");
+    assert_eq!(
+        op.disposition,
+        Disposition::Failed,
+        "interrupted keyring_write must be Failed so inline fallback re-migrates"
+    );
+}
+
+// ── Two independent processes serialised by the advisory lock ─────────────────
+
+/// Helper mode: when `STORE_JOURNAL_TEST_ROLE=writer` is set, this process
+/// acts as the writer subprocess. Acquires the advisory lock, appends "from-writer\n"
+/// to `<dir>/output.txt`, holds the lock for 50ms, then exits.
+///
+/// This function is called from a `#[test]` helper-mode check at the top of
+/// the module. It does NOT use `#[test]` itself — it runs when the test binary
+/// is re-invoked as a subprocess.
+#[doc(hidden)]
+pub fn maybe_run_subprocess_helper() {
+    let role = std::env::var("STORE_JOURNAL_TEST_ROLE").unwrap_or_default();
+    match role.as_str() {
+        "writer" => {
+            let dir = std::env::var("STORE_JOURNAL_TEST_DIR")
+                .expect("STORE_JOURNAL_TEST_DIR must be set for writer role");
+            let anchor = std::path::PathBuf::from(&dir);
+            let output_path = anchor.join("output.txt");
+
+            let _guard =
+                JournalLockGuard::acquire(&anchor).expect("subprocess: acquire advisory lock");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&output_path)
+                .expect("subprocess: open output.txt");
+            use std::io::Write;
+            writeln!(file, "from-writer").expect("subprocess: write");
+            drop(file);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::process::exit(0);
+        }
+        "json_mutator" => {
+            // Subprocess B for test_two_processes_no_lost_json_update.
+            //
+            // Acquires the advisory lock, fresh-decodes managed-agents.json,
+            // appends one record, and atomically writes back — mirroring what
+            // `mutate_store` does for every real command.
+            let dir = std::env::var("STORE_JOURNAL_TEST_DIR")
+                .expect("STORE_JOURNAL_TEST_DIR must be set for json_mutator role");
+            let anchor = std::path::PathBuf::from(&dir);
+            let agents_path = anchor.join("managed-agents.json");
+
+            let _guard =
+                JournalLockGuard::acquire(&anchor).expect("subprocess: acquire advisory lock");
+
+            // Fresh decode under the lock.
+            let bytes = std::fs::read(&agents_path).expect("subprocess: read agents json");
+            let mut records: Vec<serde_json::Value> =
+                serde_json::from_slice(&bytes).expect("subprocess: decode agents json");
+
+            // Append a new record so the test can count rows.
+            records.push(serde_json::json!({"pubkey": "subprocess_agent"}));
+
+            let payload =
+                serde_json::to_vec_pretty(&records).expect("subprocess: serialize agents json");
+            atomic_write_with_fsync(&agents_path, &payload)
+                .expect("subprocess: atomic write agents json");
+
+            std::process::exit(0);
+        }
+        _ => {}
+    }
+}
+
+/// Subprocess entry-point check: when `STORE_JOURNAL_TEST_ROLE=writer` is set,
+/// delegate to the helper (which writes and exits 0) before any other test
+/// discovery runs. Harmless no-op on normal test runs.
+#[test]
+fn subprocess_mode_check() {
+    maybe_run_subprocess_helper();
+}
+
+/// Two real processes serialised by the advisory lock.
+///
+/// Process A (this process) acquires the lock, writes "from-a\n" to output.txt,
+/// then spawns process B (this test binary re-invoked as a subprocess with
+/// `STORE_JOURNAL_TEST_ROLE=writer`) which must block until A releases.
+/// After B exits, we verify output.txt contains both lines in order — proving
+/// the lock serialised them.
+#[test]
+fn test_two_processes_serialised_by_advisory_lock() {
+    let dir = tmp_dir();
+    let anchor = dir.path().to_path_buf();
+    std::fs::create_dir_all(&anchor).unwrap();
+    let output_path = anchor.join("output.txt");
+
+    // Phase 1: process A (this process) acquires the lock and writes.
+    {
+        let _guard = JournalLockGuard::acquire(&anchor).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&output_path)
+            .unwrap();
+        use std::io::Write;
+        writeln!(file, "from-a").unwrap();
+        drop(file);
+
+        // Phase 2: while A holds the lock, spawn process B.
+        // B will block on lock acquisition until A's guard drops.
+        let exe = std::env::current_exe().expect("current_exe must be available in tests");
+        let mut child = std::process::Command::new(&exe)
+            .env("STORE_JOURNAL_TEST_ROLE", "writer")
+            .env("STORE_JOURNAL_TEST_DIR", anchor.to_str().unwrap())
+            // Suppress cargo test output from the subprocess.
+            .env("RUST_TEST_NOCAPTURE", "0")
+            // Filter to only the subprocess sentinel so B doesn't run all tests.
+            .arg("subprocess_mode_check")
+            .arg("--test-threads=1")
+            .spawn()
+            .expect("failed to spawn writer subprocess");
+
+        // Hold the lock for 80ms to ensure B is waiting.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+
+        // Phase 3: A releases the lock (guard drops at end of block).
+        // B will now acquire and write.
+        drop(_guard);
+
+        // Wait for B to finish.
+        let status = child.wait().expect("subprocess must finish");
+        assert!(
+            status.success(),
+            "writer subprocess must exit 0, got {status:?}"
+        );
+    }
+
+    // Phase 4: read output.txt and verify both lines are present in order.
+    let content = std::fs::read_to_string(&output_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(
+        lines,
+        vec!["from-a", "from-writer"],
+        "output must show A wrote first, then B: got {lines:?}"
+    );
+}
+
+/// Two real processes, no lost update: advisory lock serialises
+/// lock-acquire → decode → mutate → write across OS process boundaries.
+/// Seed has 1 record, A adds 1 under lock, spawns B which must block until A
+/// releases, B adds 1. Final count must be 3 — not 2 (lost-update result).
+#[test]
+fn test_two_processes_no_lost_json_update() {
+    let dir = tmp_dir();
+    let anchor = dir.path().to_path_buf();
+    std::fs::create_dir_all(&anchor).unwrap();
+    let agents_path = anchor.join("managed-agents.json");
+
+    // Seed: one agent record.
+    std::fs::write(
+        &agents_path,
+        serde_json::to_vec_pretty(&[serde_json::json!({"pubkey": "seed_agent"})]).unwrap(),
+    )
+    .unwrap();
+
+    {
+        let _guard = JournalLockGuard::acquire(&anchor).unwrap();
+
+        // A: fresh decode, append, write back.
+        let bytes = std::fs::read(&agents_path).unwrap();
+        let mut records: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        records.push(serde_json::json!({"pubkey": "process_a_agent"}));
+        let payload = serde_json::to_vec_pretty(&records).unwrap();
+        atomic_write_with_fsync(&agents_path, &payload).unwrap();
+
+        // Spawn B while A holds the lock.
+        let exe = std::env::current_exe().expect("current_exe must be available in tests");
+        let mut child = std::process::Command::new(&exe)
+            .env("STORE_JOURNAL_TEST_ROLE", "json_mutator")
+            .env("STORE_JOURNAL_TEST_DIR", anchor.to_str().unwrap())
+            .env("RUST_TEST_NOCAPTURE", "0")
+            .arg("subprocess_mode_check")
+            .arg("--test-threads=1")
+            .spawn()
+            .expect("failed to spawn json_mutator subprocess");
+
+        // Hold the lock long enough for B to block.
+        std::thread::sleep(std::time::Duration::from_millis(80));
+
+        drop(_guard); // A releases; B may now acquire.
+
+        let status = child.wait().expect("subprocess must finish");
+        assert!(
+            status.success(),
+            "json_mutator subprocess must exit 0, got {status:?}"
+        );
+    }
+
+    // Final state: seed + A + B = 3 records.  A lost-update would yield 2.
+    let final_bytes = std::fs::read(&agents_path).unwrap();
+    let final_records: Vec<serde_json::Value> = serde_json::from_slice(&final_bytes).unwrap();
+    assert_eq!(
+        final_records.len(),
+        3,
+        "final agent count must be 3 (seed + A + B); got {} — lost-update occurred",
+        final_records.len()
+    );
+    let pubkeys: Vec<&str> = final_records
+        .iter()
+        .filter_map(|r| r["pubkey"].as_str())
+        .collect();
+    assert!(
+        pubkeys.contains(&"seed_agent")
+            && pubkeys.contains(&"process_a_agent")
+            && pubkeys.contains(&"subprocess_agent"),
+        "all three agents must be present: {pubkeys:?}"
+    );
+}

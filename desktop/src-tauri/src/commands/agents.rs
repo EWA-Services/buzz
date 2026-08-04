@@ -7,7 +7,7 @@ use crate::{
         build_managed_agent_summary, current_instance_id, discover_provider_candidates,
         ensure_persona_is_active, find_managed_agent_mut, load_managed_agents, load_personas,
         load_teams, managed_agent_avatar_url, mutate_agent_store, normalize_agent_args,
-        provider_deploy, resolve_provider_binary, save_managed_agents, start_managed_agent_process,
+        provider_deploy, resolve_provider_binary, start_managed_agent_process,
         stop_managed_agent_process, stop_managed_agent_workspace_pair,
         sync_managed_agent_processes, try_regenerate_nest, validate_provider_config, BackendKind,
         CreateManagedAgentRequest, CreateManagedAgentResponse, ManagedAgentRecord,
@@ -25,221 +25,14 @@ pub(super) fn workspace_owner_hex(state: &AppState) -> Result<String, String> {
     Ok(keys.public_key().to_hex())
 }
 
-/// Retain a freshly authored managed-agent event in the local store, flagged
-/// for relay sync. MUST be called inside the `managed_agents_store_lock`-held
-/// body after `save_managed_agents`, NEVER across an `.await`: it acquires
-/// `state.keys` and a retention-db connection, both `std::sync` guards, and
-/// drops them before returning.
-///
-/// Owner-authored, mirroring `commands::personas::retain_persona_pending`: the
-/// owner keys sign, the d_tag is the agent's pubkey, so the coordinate is
-/// `30177:<owner>:<agent_pubkey>`. The event content is the opt-IN
-/// [`agent_event_content`] projection — the retention upsert's content-equality
-/// guard compares this projection, so an operational start/stop that mutates
-/// only runtime fields produces an identical row and never re-enqueues a
-/// publish. Best-effort: a failure here is logged and swallowed so a retention
-/// hiccup never blocks the disk-authoritative write.
-///
-/// `op_id` is the journal operation ID from the preceding `mutate_agent_store`
-/// call, used to record the signed event in the B1 outbox before it enters the
-/// retention DB (durable event identity before external relay dispatch).  When
-/// `None`, a publication-only operation is created for the outbox entry.
-pub(super) fn retain_managed_agent_pending(
-    app: &AppHandle,
-    state: &AppState,
-    record: &ManagedAgentRecord,
-    op_id: Option<&str>,
-) {
-    use crate::managed_agents::{reconcile::retain_agent_record, retention::open_retention_db};
-
-    let result = (|| -> Result<(), String> {
-        let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
-        let conn = open_retention_db(&scope.db_path)?;
-        // Shared engine with the boot-time reconcile: projection content diff
-        // (no republish for runtime-only churn) + monotonic created_at bump
-        // past the retained head (NIP-AP step 3).
-        // Returns Some((event_id, raw_json)) when a new event was written.
-        if let Some((event_id, raw_json)) = retain_agent_record(&conn, &scope.owner_keys, record)? {
-            // B1 journal outbox: record the immutable event identity before
-            // the retention DB entry is flushed to the relay.  Uses the
-            // caller-supplied operation ID when available; otherwise creates a
-            // publication-only operation so the event is durably tracked even
-            // for update paths that do not produce a file-write op_id.
-            let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
-            std::fs::create_dir_all(&anchor)
-                .map_err(|e| format!("create anchor dir for outbox: {e}"))?;
-            if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-                let pub_op_id: String;
-                let effective_op_id: &str = match op_id {
-                    Some(id) => id,
-                    None => {
-                        pub_op_id = crate::managed_agents::store_journal::new_operation_id();
-                        let _ = crate::managed_agents::store_journal::insert_operation(
-                            &journal,
-                            &pub_op_id,
-                            "publish",
-                            &record.pubkey,
-                            crate::managed_agents::store_journal::Generation::zero(),
-                        );
-                        &pub_op_id
-                    }
-                };
-                let _ = crate::managed_agents::store_journal::insert_outbox_event(
-                    &journal,
-                    &event_id,
-                    effective_op_id,
-                    raw_json.as_bytes(),
-                );
-            }
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        eprintln!("buzz-desktop: agent-retain: {e}");
-    }
-}
-
-/// Purge a deleted agent's pending row and enqueue a NIP-09 tombstone, both
-/// inside the `managed_agents_store_lock`-held delete body and NEVER across an
-/// `.await`.
-///
-/// Mirrors `commands::personas::tombstone_persona_pending`: the agent row at
-/// `(30177, owner, agent_pubkey)` is purged first so an unpublished edit can
-/// never resurrect it after the tombstone publishes, then the kind:5 tombstone
-/// is retained at its own `(5, owner, agent_pubkey)` coordinate with
-/// `pending_sync = 1`. The `d_tag` is the agent's pubkey. Best-effort: a
-/// failure is logged and swallowed so a retention hiccup never blocks the
-/// disk-authoritative delete.
-pub(super) fn tombstone_managed_agent_pending(
-    app: &AppHandle,
-    state: &AppState,
-    agent_pubkey: &str,
-) {
-    use crate::managed_agents::{
-        agent_events::build_agent_delete,
-        retention::{
-            delete_retained_event, open_retention_db, retain_event, tombstone_retention_d_tag,
-            RetainedEvent,
-        },
-    };
-    use buzz_core_pkg::kind::KIND_MANAGED_AGENT;
-    use nostr::JsonUtil;
-
-    const KIND_DELETE: u32 = 5;
-
-    let result = (|| -> Result<(), String> {
-        let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
-        let owner_pubkey = scope.owner_keys.public_key().to_hex();
-        let event = build_agent_delete(agent_pubkey, &owner_pubkey)?
-            .sign_with_keys(&scope.owner_keys)
-            .map_err(|e| format!("failed to sign managed-agent tombstone: {e}"))?;
-        let conn = open_retention_db(&scope.db_path)?;
-        delete_retained_event(&conn, KIND_MANAGED_AGENT, &owner_pubkey, agent_pubkey)?;
-        retain_event(
-            &conn,
-            &RetainedEvent {
-                kind: KIND_DELETE,
-                pubkey: owner_pubkey,
-                // Key by the target coordinate so cross-kind d-tag tombstones
-                // occupy distinct rows (F2c).
-                d_tag: tombstone_retention_d_tag(KIND_MANAGED_AGENT, agent_pubkey),
-                content: event.content.to_string(),
-                created_at: event.created_at.as_secs() as i64,
-                raw_event: event.as_json(),
-                pending_sync: true,
-            },
-        )
-    })();
-    if let Err(e) = result {
-        eprintln!("buzz-desktop: agent-tombstone: {e}");
-    }
-}
-
-/// Build and sign the NIP-IA `kind:9035` archive request enqueued when an
-/// agent is deleted. Pure given the keys — unit-testable without an
-/// `AppHandle`. Reuses the same wire builder as the GUI's Archive action
-/// (`events::build_archive_identity_request`); the machine-readable reason is
-/// `retired` (NIP-IA suggested code for a deliberately decommissioned key).
-///
-/// The owner auth tag is minted locally from the same keys used to sign the
-/// request, avoiding a network fetch while the managed-agent store lock is
-/// held. The relay still independently verifies it against the agent's live
-/// kind:0.
-pub(super) fn build_agent_archive_request(
-    keys: &nostr::Keys,
-    agent_pubkey: &str,
-) -> Result<nostr::Event, String> {
-    let auth_tag = if keys
-        .public_key()
-        .to_hex()
-        .eq_ignore_ascii_case(agent_pubkey)
-    {
-        None
-    } else {
-        let agent = nostr::PublicKey::from_hex(agent_pubkey)
-            .map_err(|e| format!("invalid agent pubkey: {e}"))?;
-        let tag_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(keys, &agent, "")
-            .map_err(|e| format!("failed to build owner auth tag: {e}"))?;
-        let parts: Vec<String> = serde_json::from_str(&tag_json)
-            .map_err(|e| format!("failed to parse owner auth tag: {e}"))?;
-        Some(
-            <[String; 4]>::try_from(parts)
-                .map_err(|_| "owner auth tag must have four elements".to_string())?,
-        )
-    };
-    crate::events::build_archive_identity_request(
-        agent_pubkey,
-        "",
-        Some("retired"),
-        None,
-        auth_tag.as_ref(),
-    )?
-    .sign_with_keys(keys)
-    .map_err(|e| format!("failed to sign archive request: {e}"))
-}
-
-/// Enqueue a NIP-IA `kind:9035` archive request for a deleted agent, retained
-/// next to its kind:5 tombstone with `pending_sync = 1`.
-///
-/// The tombstone removes the agent's 30177 record cross-device, but the
-/// agent's `kind:0` and channel membership keep populating member pickers and
-/// autocomplete on the relay until the identity is archived. Retaining the
-/// request here gives archival the same offline durability as the tombstone;
-/// the flush loop is the sole publisher and re-signs the request with a fresh
-/// `created_at` at publish time, because the relay enforces a ±120s freshness
-/// window on 9035s.
-///
-/// Same contract as `tombstone_managed_agent_pending`: called inside the
-/// `managed_agents_store_lock`-held delete body, never across an `.await`,
-/// best-effort — a failure is logged and swallowed so it never blocks the
-/// disk-authoritative delete.
-pub(super) fn archive_managed_agent_pending(app: &AppHandle, state: &AppState, agent_pubkey: &str) {
-    use crate::managed_agents::retention::{open_retention_db, retain_event, RetainedEvent};
-    use buzz_core_pkg::kind::KIND_IA_ARCHIVE_REQUEST;
-    use nostr::JsonUtil;
-
-    let result = (|| -> Result<(), String> {
-        let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
-        let owner_pubkey = scope.owner_keys.public_key().to_hex();
-        let event = build_agent_archive_request(&scope.owner_keys, agent_pubkey)?;
-        let conn = open_retention_db(&scope.db_path)?;
-        retain_event(
-            &conn,
-            &RetainedEvent {
-                kind: KIND_IA_ARCHIVE_REQUEST,
-                pubkey: owner_pubkey,
-                d_tag: agent_pubkey.to_string(),
-                content: event.content.to_string(),
-                created_at: event.created_at.as_secs() as i64,
-                raw_event: event.as_json(),
-                pending_sync: true,
-            },
-        )
-    })();
-    if let Err(e) = result {
-        eprintln!("buzz-desktop: agent-archive: {e}");
-    }
-}
+#[path = "agents_retain.rs"]
+mod retain;
+#[allow(unused_imports)]
+// build_agent_archive_request is test-only; re-exported for agents_tests
+pub(crate) use retain::{
+    archive_managed_agent_pending, build_agent_archive_request, retain_managed_agent_pending,
+    tombstone_managed_agent_pending,
+};
 
 fn normalize_relay_mesh(
     config: Option<&RelayMeshConfig>,
@@ -339,18 +132,25 @@ pub(super) async fn start_local_agent_pairs_with_preflight(
             .managed_agents_store_lock
             .lock()
             .map_err(|e| e.to_string())?;
-        let mut records = load_managed_agents(app)?;
-        let record = find_managed_agent_mut(&mut records, pubkey)?;
+        let pubkey_owned = pubkey.to_string();
         let personas = load_personas(app).unwrap_or_default();
-        if let Some(persona_id) = record.persona_id.clone() {
-            if let Some(persona) = personas.iter().find(|persona| persona.id == persona_id) {
-                crate::managed_agents::persona_events::apply_persona_snapshot(record, persona);
-                record.updated_at = crate::util::now_iso();
-            }
-        }
-        let _store_guard = save_managed_agents(app, store_guard, &records)?;
-        if let Some(saved_record) = records.iter().find(|record| record.pubkey == pubkey) {
-            retain_managed_agent_pending(app, state, saved_record, None);
+        let (saved_record_opt, _guard) =
+            mutate_agent_store(app, store_guard, move |mut instances, _journal| {
+                let record = find_managed_agent_mut(&mut instances, &pubkey_owned)?;
+                if let Some(persona_id) = record.persona_id.clone() {
+                    if let Some(persona) = personas.iter().find(|persona| persona.id == persona_id)
+                    {
+                        crate::managed_agents::persona_events::apply_persona_snapshot(
+                            record, persona,
+                        );
+                        record.updated_at = crate::util::now_iso();
+                    }
+                }
+                let saved = instances.iter().find(|r| r.pubkey == pubkey_owned).cloned();
+                Ok((instances, saved))
+            })?;
+        if let Some(saved_record) = saved_record_opt {
+            retain_managed_agent_pending(app, state, &saved_record, None);
         }
     }
 
@@ -439,49 +239,67 @@ pub(super) async fn start_local_agent_with_preflight(
         .managed_agents_store_lock
         .lock()
         .map_err(|e| e.to_string())?;
-    let mut records = load_managed_agents(app)?;
     let mut runtimes = state
         .managed_agent_processes
         .lock()
         .map_err(|e| e.to_string())?;
-    let record = find_managed_agent_mut(&mut records, pubkey)?;
-    if record.backend != BackendKind::Local {
-        return Err(format!("agent {pubkey} is no longer a local agent"));
-    }
-    // Re-snapshot the persona onto the record at every spawn so the agent always
-    // starts with the current persona config (system_prompt, model, provider,
-    // runtime). This clears the "out of date" drift badge without requiring a
-    // delete+recreate. See `apply_persona_snapshot` for the precedence and
-    // env-override self-heal rules.
-    // Load personas once: used for snapshot application below and summary build
-    // at the end — avoids a second disk read for the same file in the same call.
+
+    // Load personas once outside the closure — no disk I/O inside the OS lock.
     let personas = load_personas(app).unwrap_or_default();
-    if let Some(persona_id) = record.persona_id.clone() {
-        match personas.iter().find(|p| p.id == persona_id) {
-            Some(persona) => {
-                crate::managed_agents::persona_events::apply_persona_snapshot(record, persona);
-                record.updated_at = crate::util::now_iso();
+    let personas_for_closure = personas.clone();
+    let pubkey_for_closure = pubkey.to_owned();
+    let owner_hex_for_closure = owner_hex.to_owned();
+
+    let (record_snapshot, _store_guard) =
+        mutate_agent_store(app, store_guard, move |mut instances, _journal| {
+            let record = find_managed_agent_mut(&mut instances, &pubkey_for_closure)?;
+            if record.backend != BackendKind::Local {
+                return Err(format!(
+                    "agent {} is no longer a local agent",
+                    pubkey_for_closure
+                ));
             }
-            None => {
-                return Err(
-                    crate::managed_agents::effective_config::ORPHANED_INSTANCE_ERROR.to_string(),
-                );
+            // Re-snapshot the persona onto the record at every spawn so the agent
+            // always starts with the current persona config (system_prompt, model,
+            // provider, runtime). This clears the "out of date" drift badge without
+            // requiring a delete+recreate.
+            if let Some(persona_id) = record.persona_id.clone() {
+                match personas_for_closure.iter().find(|p| p.id == persona_id) {
+                    Some(persona) => {
+                        crate::managed_agents::persona_events::apply_persona_snapshot(
+                            record, persona,
+                        );
+                        record.updated_at = crate::util::now_iso();
+                    }
+                    None => {
+                        return Err(
+                            crate::managed_agents::effective_config::ORPHANED_INSTANCE_ERROR
+                                .to_string(),
+                        );
+                    }
+                }
             }
-        }
-    }
-    start_managed_agent_process(app, record, &mut runtimes, Some(owner_hex))?;
-    let _store_guard = save_managed_agents(app, store_guard, &records)?;
-    if let Some(saved_record) = records.iter().find(|r| r.pubkey == pubkey) {
-        retain_managed_agent_pending(app, state, saved_record, None);
-    }
-    let record = records
-        .iter()
-        .find(|record| record.pubkey == pubkey)
-        .ok_or_else(|| format!("agent {pubkey} not found"))?;
+            start_managed_agent_process(
+                // SAFETY: `runtimes` is captured by move and the closure is FnOnce.
+                // The MutexGuard is valid for the duration of the closure.
+                app,
+                record,
+                &mut runtimes,
+                Some(&owner_hex_for_closure),
+            )?;
+            let snapshot = record.clone();
+            Ok((instances, snapshot))
+        })?;
+
+    retain_managed_agent_pending(app, state, &record_snapshot, None);
+    let runtimes_guard = state
+        .managed_agent_processes
+        .lock()
+        .map_err(|e| e.to_string())?;
     build_managed_agent_summary(
         app,
-        record,
-        &runtimes,
+        &record_snapshot,
+        &runtimes_guard,
         &personas,
         &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
     )
@@ -530,28 +348,29 @@ async fn deploy_to_provider(
         .managed_agents_store_lock
         .lock()
         .map_err(|e| e.to_string())?;
-    let mut records = load_managed_agents(app)?;
-    let rec = records
-        .iter_mut()
-        .find(|r| r.pubkey == pubkey)
-        .ok_or_else(|| format!("agent {pubkey} not found"))?;
-
-    match deploy_result {
-        Ok(backend_agent_id) => {
-            rec.backend_agent_id = Some(backend_agent_id);
-            rec.last_started_at = Some(now_iso());
-            rec.updated_at = now_iso();
-            rec.last_error = None;
+    let pubkey_owned = pubkey.to_string();
+    let deploy_err = deploy_result.as_ref().err().cloned();
+    mutate_agent_store(app, store_guard, move |mut instances, _journal| {
+        let rec = instances
+            .iter_mut()
+            .find(|r| r.pubkey == pubkey_owned)
+            .ok_or_else(|| format!("agent {pubkey_owned} not found"))?;
+        match deploy_result {
+            Ok(backend_agent_id) => {
+                rec.backend_agent_id = Some(backend_agent_id);
+                rec.last_started_at = Some(now_iso());
+                rec.updated_at = now_iso();
+                rec.last_error = None;
+            }
+            Err(ref e) => {
+                rec.last_error = Some(e.clone());
+                rec.updated_at = now_iso();
+            }
         }
-        Err(ref e) => {
-            rec.last_error = Some(e.clone());
-            rec.updated_at = now_iso();
-            let _store_guard = save_managed_agents(app, store_guard, &records)?;
-            return Err(e.clone());
-        }
-    }
-    let _store_guard = save_managed_agents(app, store_guard, &records)?;
-    Ok(())
+        Ok((instances, ()))
+    })
+    .map(|_| ())?;
+    deploy_err.map_or(Ok(()), Err)
 }
 
 // Async so the blocking body (disk reads of agent/persona records, per-agent
@@ -569,23 +388,27 @@ pub async fn list_managed_agents(app: AppHandle) -> Result<Vec<ManagedAgentSumma
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
+        let instance_id = current_instance_id(&app);
 
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let _store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
+        let ((records, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let out = instances.clone();
+                Ok((instances, (out, exited)))
+            })?;
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
         }
 
+        let runtimes = state
+            .managed_agent_processes
+            .lock()
+            .map_err(|error| error.to_string())?;
         let personas = load_personas(&app).unwrap_or_default();
         // One disk read for the whole list — build_managed_agent_summary takes
         // the config as a parameter precisely so this poll-every-5s call does
@@ -653,19 +476,19 @@ pub async fn create_managed_agent(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
+        let instance_id = current_instance_id(&app);
 
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let _store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
+        let ((synced_instances, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let out = instances.clone();
+                Ok((instances, (out, exited)))
+            })?;
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
         }
@@ -675,7 +498,10 @@ pub async fn create_managed_agent(
         }
         let keys = Keys::generate();
         let pubkey = keys.public_key().to_hex();
-        if records.iter().any(|record| record.pubkey == pubkey) {
+        if synced_instances
+            .iter()
+            .any(|record| record.pubkey == pubkey)
+        {
             return Err(format!("agent {pubkey} already exists"));
         }
         let private_key_nsec = keys
@@ -726,28 +552,9 @@ pub async fn create_managed_agent(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
-        let mut runtimes = state
-            .managed_agent_processes
-            .lock()
-            .map_err(|error| error.to_string())?;
 
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
-        for pubkey in &exited_pubkeys {
-            state.clear_agent_session_caches(pubkey);
-        }
-
-        // Guard against a duplicate pubkey appearing between phase 1 and phase 3
-        // (extremely unlikely but safe to check).
-        if records.iter().any(|record| record.pubkey == pubkey) {
-            return Err(format!("agent {pubkey} already exists"));
-        }
+        // Duplicate pubkey guard + insert happen atomically inside the
+        // mutate_agent_store closure below; sync already ran in Phase 1.
         // Provider config was already validated in Pre-Phase 2; cache the discovered binary path for deploy_to_provider.
         let provider_binary_path = if let BackendKind::Provider { ref id, .. } = input.backend {
             // Use resolve_provider_binary (discovered candidates only).
@@ -875,7 +682,7 @@ pub async fn create_managed_agent(
             linked_persona.as_ref(),
         )?;
 
-        let record = crate::managed_agents::ManagedAgentRecord {
+        let record = ManagedAgentRecord {
             pubkey: pubkey.clone(),
             name: name.clone(),
             persona_id: requested_persona_id.clone(),
@@ -993,17 +800,7 @@ pub async fn create_managed_agent(
             })?;
 
         // After save: advance operation to committed.
-        {
-            let anchor = crate::managed_agents::store_journal::store_anchor_dir(&app)?;
-            if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-                let _ = crate::managed_agents::store_journal::advance_disposition(
-                    &journal,
-                    &op_id_out,
-                    &crate::managed_agents::store_journal::Disposition::Pending,
-                    &crate::managed_agents::store_journal::Disposition::Committed,
-                );
-            }
-        }
+        crate::managed_agents::store_journal::advance_to_committed(&app, &op_id_out);
 
         // Re-read the saved record for the response.
         let records = load_managed_agents(&app)?;
@@ -1016,6 +813,10 @@ pub async fn create_managed_agent(
         // is_builtin/persona-membership gate).
         retain_managed_agent_pending(&app, &state, record, Some(&op_id_out));
         let personas = load_personas(&app).unwrap_or_default();
+        let runtimes = state
+            .managed_agent_processes
+            .lock()
+            .map_err(|e| e.to_string())?;
         (
             build_managed_agent_summary(
                 &app,
@@ -1038,24 +839,27 @@ pub async fn create_managed_agent(
                     .managed_agents_store_lock
                     .lock()
                     .map_err(|e| e.to_string())?;
-                let mut records = load_managed_agents(&app)?;
+                let pubkey_owned = pubkey.clone();
+                let error_msg = error.clone();
+                let (record_snap, _guard) =
+                    mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                        let record = find_managed_agent_mut(&mut instances, &pubkey_owned)?;
+                        record.updated_at = now_iso();
+                        record.last_error = Some(error_msg);
+                        let snap = instances.iter().find(|r| r.pubkey == pubkey_owned).cloned();
+                        Ok((instances, snap))
+                    })?;
+                spawn_error = Some(error);
+                let record = record_snap
+                    .ok_or_else(|| "created agent disappeared unexpectedly".to_string())?;
                 let runtimes = state
                     .managed_agent_processes
                     .lock()
                     .map_err(|e| e.to_string())?;
-                let record = find_managed_agent_mut(&mut records, &pubkey)?;
-                record.updated_at = now_iso();
-                record.last_error = Some(error.clone());
-                let _store_guard = save_managed_agents(&app, store_guard, &records)?;
-                spawn_error = Some(error);
-                let record = records
-                    .iter()
-                    .find(|record| record.pubkey == pubkey)
-                    .ok_or_else(|| "created agent disappeared unexpectedly".to_string())?;
                 let personas = load_personas(&app).unwrap_or_default();
                 build_managed_agent_summary(
                     &app,
-                    record,
+                    &record,
                     &runtimes,
                     &personas,
                     &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
@@ -1175,29 +979,29 @@ pub async fn start_managed_agent(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
+        let instance_id = current_instance_id(&app);
+        let pubkey_owned = pubkey.clone();
+        let reconcile_personas = load_personas(&app).unwrap_or_default();
 
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let _store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
+        let ((records, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let out = instances.clone();
+                Ok((instances, (out, exited)))
+            })?;
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
         }
 
-        let record = find_managed_agent_mut(&mut records, &pubkey)?;
-
-        // Resolve the effective harness for the avatar-fallback derivation in
-        // profile reconcile (the create-time snapshot may be empty or stale for
-        // a persona-inherited harness).
-        let reconcile_personas = load_personas(&app).unwrap_or_default();
+        let record = records
+            .iter()
+            .find(|r| r.pubkey == pubkey_owned)
+            .ok_or_else(|| format!("agent {pubkey_owned} not found"))?;
         let reconcile_effective_command =
             crate::managed_agents::record_agent_command(record, &reconcile_personas);
 
@@ -1314,45 +1118,45 @@ pub async fn stop_managed_agent(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
+        let instance_id = current_instance_id(&app);
+        let pubkey_owned = pubkey.clone();
+        let app_for_stop = app.clone();
 
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
-        for pubkey in &exited_pubkeys {
-            state.clear_agent_session_caches(pubkey);
+        let ((record_snap, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let record = find_managed_agent_mut(&mut instances, &pubkey_owned)?;
+                // Remote agents are stopped via !shutdown @mention from the frontend,
+                // not via this backend command. Reject the call.
+                if record.backend != BackendKind::Local {
+                    return Err(
+                        "remote agents are stopped via !shutdown message, not this command"
+                            .to_string(),
+                    );
+                }
+                // Pair-scoped: stops only the active workspace's pair; delete and
+                // the config-restart flows still drain every pair.
+                stop_managed_agent_workspace_pair(&app_for_stop, record, &mut runtimes)?;
+                let snap = instances.iter().find(|r| r.pubkey == pubkey_owned).cloned();
+                Ok((instances, (snap, exited)))
+            })?;
+        for pk in &exited_pubkeys {
+            state.clear_agent_session_caches(pk);
         }
-
-        {
-            let record = find_managed_agent_mut(&mut records, &pubkey)?;
-            // Remote agents are stopped via !shutdown @mention from the frontend,
-            // not via this backend command. Reject the call.
-            if record.backend != BackendKind::Local {
-                return Err(
-                    "remote agents are stopped via !shutdown message, not this command".to_string(),
-                );
-            }
-            // Pair-scoped: stops only the active workspace's pair; delete and
-            // the config-restart flows still drain every pair.
-            stop_managed_agent_workspace_pair(&app, record, &mut runtimes)?;
-        }
-        let _store_guard = save_managed_agents(&app, store_guard, &records)?;
-        let record = records
-            .iter()
-            .find(|record| record.pubkey == pubkey)
-            .ok_or_else(|| format!("agent {pubkey} not found"))?;
+        let record = record_snap.ok_or_else(|| format!("agent {pubkey} not found"))?;
+        let runtimes = state
+            .managed_agent_processes
+            .lock()
+            .map_err(|error| error.to_string())?;
         let personas = load_personas(&app).unwrap_or_default();
         build_managed_agent_summary(
             &app,
-            record,
+            &record,
             &runtimes,
             &personas,
             &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
@@ -1378,48 +1182,41 @@ pub async fn delete_managed_agent(
                 .managed_agents_store_lock
                 .lock()
                 .map_err(|error| error.to_string())?;
-            let mut records = load_managed_agents(&app)?;
             let mut runtimes = state
                 .managed_agent_processes
                 .lock()
                 .map_err(|error| error.to_string())?;
+            let instance_id = current_instance_id(&app);
+            let app_for_stop = app.clone();
 
-            let (sync_changed, exited_pubkeys) = sync_managed_agent_processes(
-                &mut records,
-                &mut runtimes,
-                &current_instance_id(&app),
-            );
-            let store_guard = if sync_changed {
-                save_managed_agents(&app, store_guard, &records)?
-            } else {
-                store_guard
-            };
-            for pubkey in &exited_pubkeys {
-                state.clear_agent_session_caches(pubkey);
+            let ((exited_pubkeys,), _sync_guard) = mutate_agent_store(
+                &app,
+                store_guard,
+                move |mut instances, _journal| {
+                    let (_, exited) =
+                        sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                    Ok((instances, (exited,)))
+                },
+            )?;
+            for pk in &exited_pubkeys {
+                state.clear_agent_session_caches(pk);
             }
+
+            // Re-acquire the lock for the delete operation.
+            let store_guard2 = state
+                .managed_agents_store_lock
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let mut runtimes2 = state
+                .managed_agent_processes
+                .lock()
+                .map_err(|error| error.to_string())?;
 
             // Guard: reject deletion of deployed remote agents unless explicitly forced.
             // This turns "don't orphan remote infra" from a UI convention into a backend
             // invariant — a buggy or compromised IPC caller cannot silently orphan a live
             // remote deployment. The frontend sends force_remote_delete: true only after
             // the user confirms the orphan warning.
-            if let Some(record) = records.iter().find(|r| r.pubkey == pubkey) {
-                if record.backend != BackendKind::Local
-                    && record.backend_agent_id.is_some()
-                    && !force_remote_delete.unwrap_or(false)
-                {
-                    return Err(
-                        "cannot delete a deployed remote agent without force_remote_delete: true"
-                            .to_string(),
-                    );
-                }
-            }
-
-            if let Some(record) = records.iter_mut().find(|record| record.pubkey == pubkey) {
-                stop_managed_agent_process(&app, record, &mut runtimes)?;
-            }
-            drop(runtimes); // release process lock before store mutation
-            state.clear_agent_session_caches(&pubkey);
 
             // Journal: tombstone before the file write (inside mutate_agent_store's
             // advisory lock for atomicity). Read current generation first.
@@ -1427,7 +1224,22 @@ pub async fn delete_managed_agent(
             let pubkey_for_closure = pubkey.clone();
             let op_id_for_closure = op_id.clone();
             let ((), _store_guard) =
-                mutate_agent_store(&app, store_guard, move |mut instances, journal| {
+                mutate_agent_store(&app, store_guard2, move |mut instances, journal| {
+                    // Guard against orphan remote deployment.
+                    if let Some(record) = instances.iter().find(|r| r.pubkey == pubkey_for_closure) {
+                        if record.backend != BackendKind::Local
+                            && record.backend_agent_id.is_some()
+                            && !force_remote_delete.unwrap_or(false)
+                        {
+                            return Err(
+                                "cannot delete a deployed remote agent without force_remote_delete: true"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    if let Some(record) = instances.iter_mut().find(|r| r.pubkey == pubkey_for_closure) {
+                        stop_managed_agent_process(&app_for_stop, record, &mut runtimes2)?;
+                    }
                     let initial_len = instances.len();
                     instances.retain(|r| r.pubkey != pubkey_for_closure);
                     if instances.len() == initial_len {
@@ -1454,18 +1266,10 @@ pub async fn delete_managed_agent(
                     Ok((instances, ()))
                 })?;
 
+            state.clear_agent_session_caches(&pubkey);
+
             // Advance to committed after the file write.
-            {
-                let anchor = crate::managed_agents::store_journal::store_anchor_dir(&app)?;
-                if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-                    let _ = crate::managed_agents::store_journal::advance_disposition(
-                        &journal,
-                        &op_id,
-                        &crate::managed_agents::store_journal::Disposition::Pending,
-                        &crate::managed_agents::store_journal::Disposition::Committed,
-                    );
-                }
-            }
+            crate::managed_agents::store_journal::advance_to_committed(&app, &op_id);
 
             // Remove the agent's nsec from the keyring after the record is gone.
             crate::managed_agents::delete_agent_key(&pubkey);

@@ -119,11 +119,17 @@ pub(crate) async fn reconcile_agent_profile(
                     .managed_agents_store_lock
                     .lock()
                     .map_err(|e| e.to_string())?;
-                let mut records = load_managed_agents(app)?;
-                if let Some(record) = records.iter_mut().find(|r| r.pubkey == data.pubkey) {
-                    record.avatar_url = Some(backfilled.clone());
-                    let _store_guard = save_managed_agents(app, store_guard, &records)?;
-                }
+                let backfilled_clone = backfilled.clone();
+                let pubkey_clone = data.pubkey.clone();
+                let _ = crate::managed_agents::mutate_managed_agent(
+                    app,
+                    store_guard,
+                    &pubkey_clone,
+                    move |record, _journal| {
+                        record.avatar_url = Some(backfilled_clone);
+                        Ok(())
+                    },
+                );
             }
 
             backfilled

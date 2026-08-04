@@ -238,7 +238,7 @@ pub async fn flush_pending_events(
 ) -> Result<u32, String> {
     let relay_url = crate::relay::relay_ws_url_with_override(state);
     let owner_keys = state.signing_keys()?;
-    flush_pending_events_at(db_path, state, &relay_url, &owner_keys).await
+    flush_pending_events_at(db_path, None, state, &relay_url, &owner_keys).await
 }
 
 /// Resolve and flush only the currently active `(relay, owner)` scope.
@@ -251,11 +251,19 @@ pub async fn flush_active_pending_events(
     state: &AppState,
 ) -> Result<u32, String> {
     let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
-    flush_pending_events_at(&scope.db_path, state, &scope.relay_url, &scope.owner_keys).await
+    flush_pending_events_at(
+        &scope.db_path,
+        Some(app),
+        state,
+        &scope.relay_url,
+        &scope.owner_keys,
+    )
+    .await
 }
 
 async fn flush_pending_events_at(
     db_path: &std::path::Path,
+    app: Option<&tauri::AppHandle>,
     state: &AppState,
     relay_url: &str,
     owner_keys: &nostr::Keys,
@@ -337,6 +345,22 @@ async fn flush_pending_events_at(
             current.created_at,
             &current.content,
         )?;
+
+        // Mark the outbox event published in the B1 journal so boot recovery
+        // does not re-drive it and the operation can advance to Committed.
+        // Best-effort: a journal hiccup must not block the flush loop.
+        let event_id = event.id.to_hex();
+        if let Some(app) = app {
+            if let Ok(anchor) = crate::managed_agents::store_journal::store_anchor_dir(app) {
+                if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
+                    let _ = crate::managed_agents::store_journal::mark_outbox_published(
+                        &journal, &event_id, 0, // pending → published
+                        1,
+                    );
+                }
+            }
+        }
+
         flushed += 1;
     }
 

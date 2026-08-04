@@ -4,9 +4,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::{
     app_state::AppState,
     managed_agents::{
-        build_managed_agent_summary, current_instance_id, find_managed_agent_mut,
-        load_managed_agents, load_personas, save_managed_agents, sync_managed_agent_processes,
-        ManagedAgentSummary,
+        build_managed_agent_summary, current_instance_id, load_personas, mutate_agent_store,
+        sync_managed_agent_processes, ManagedAgentSummary,
     },
     util::now_iso,
 };
@@ -30,42 +29,39 @@ pub async fn set_managed_agent_start_on_app_launch(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
-
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
-        for pubkey in &exited_pubkeys {
-            state.clear_agent_session_caches(pubkey);
-        }
-
-        {
-            let record = find_managed_agent_mut(&mut records, &pubkey)?;
-            record.start_on_app_launch = start_on_app_launch;
-            record.updated_at = now_iso();
-        }
-
-        let _store_guard = save_managed_agents(&app, store_guard, &records)?;
-        let record = records
-            .iter()
-            .find(|record| record.pubkey == pubkey)
-            .ok_or_else(|| format!("agent {pubkey} not found"))?;
+        let instance_id = current_instance_id(&app);
         let personas = load_personas(&app).unwrap_or_default();
-        build_managed_agent_summary(
-            &app,
-            record,
-            &runtimes,
-            &personas,
-            &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-        )
+        let global_config =
+            crate::managed_agents::load_global_agent_config(&app).unwrap_or_default();
+
+        let app_for_closure = app.clone();
+        let ((summary, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let record = instances
+                    .iter_mut()
+                    .find(|r| r.pubkey == pubkey)
+                    .ok_or_else(|| format!("agent {pubkey} not found"))?;
+                record.start_on_app_launch = start_on_app_launch;
+                record.updated_at = now_iso();
+                let summary = build_managed_agent_summary(
+                    &app_for_closure,
+                    record,
+                    &runtimes,
+                    &personas,
+                    &global_config,
+                )?;
+                Ok((instances, (summary, exited)))
+            })?;
+        for pk in &exited_pubkeys {
+            state.clear_agent_session_caches(pk);
+        }
+        Ok(summary)
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -83,42 +79,39 @@ pub async fn set_managed_agent_auto_restart(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
         let mut runtimes = state
             .managed_agent_processes
             .lock()
             .map_err(|error| error.to_string())?;
-
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        let store_guard = if sync_changed {
-            save_managed_agents(&app, store_guard, &records)?
-        } else {
-            store_guard
-        };
-        for pubkey in &exited_pubkeys {
-            state.clear_agent_session_caches(pubkey);
-        }
-
-        {
-            let record = find_managed_agent_mut(&mut records, &pubkey)?;
-            record.auto_restart_on_config_change = auto_restart_on_config_change;
-            record.updated_at = now_iso();
-        }
-
-        let _store_guard = save_managed_agents(&app, store_guard, &records)?;
-        let record = records
-            .iter()
-            .find(|record| record.pubkey == pubkey)
-            .ok_or_else(|| format!("agent {pubkey} not found"))?;
+        let instance_id = current_instance_id(&app);
         let personas = load_personas(&app).unwrap_or_default();
-        build_managed_agent_summary(
-            &app,
-            record,
-            &runtimes,
-            &personas,
-            &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-        )
+        let global_config =
+            crate::managed_agents::load_global_agent_config(&app).unwrap_or_default();
+
+        let app_for_closure = app.clone();
+        let ((summary, exited_pubkeys), _guard) =
+            mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                let (_, exited) =
+                    sync_managed_agent_processes(&mut instances, &mut runtimes, &instance_id);
+                let record = instances
+                    .iter_mut()
+                    .find(|r| r.pubkey == pubkey)
+                    .ok_or_else(|| format!("agent {pubkey} not found"))?;
+                record.auto_restart_on_config_change = auto_restart_on_config_change;
+                record.updated_at = now_iso();
+                let summary = build_managed_agent_summary(
+                    &app_for_closure,
+                    record,
+                    &runtimes,
+                    &personas,
+                    &global_config,
+                )?;
+                Ok((instances, (summary, exited)))
+            })?;
+        for pk in &exited_pubkeys {
+            state.clear_agent_session_caches(pk);
+        }
+        Ok(summary)
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?

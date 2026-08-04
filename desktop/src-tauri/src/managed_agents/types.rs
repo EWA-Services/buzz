@@ -830,7 +830,6 @@ fn default_auto_restart_on_config_change() -> bool {
 fn default_record_active() -> bool {
     true
 }
-
 // ── Inbound author gate ──────────────────────────────────────────────────────
 //
 // Mirrors `buzz-acp`'s `--respond-to` CLI flag and the related
@@ -996,6 +995,5 @@ mod catalog_source;
 pub use catalog_source::CatalogSource;
 mod requests;
 pub use requests::*;
-
 #[cfg(test)]
 mod tests;

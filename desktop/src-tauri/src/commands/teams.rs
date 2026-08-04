@@ -66,22 +66,21 @@ pub(super) fn retain_team_pending(app: &AppHandle, state: &AppState, team: &Team
         let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
         std::fs::create_dir_all(&anchor)
             .map_err(|e| format!("create anchor dir for team outbox: {e}"))?;
-        if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-            let pub_op_id = crate::managed_agents::store_journal::new_operation_id();
-            let _ = crate::managed_agents::store_journal::insert_operation(
-                &journal,
-                &pub_op_id,
-                "publish",
-                &team.id,
-                crate::managed_agents::store_journal::Generation::zero(),
-            );
-            let _ = crate::managed_agents::store_journal::insert_outbox_event(
-                &journal,
-                &event_id,
-                &pub_op_id,
-                raw_json.as_bytes(),
-            );
-        }
+        let journal = crate::managed_agents::store_journal::open_journal(&anchor)?;
+        let pub_op_id = crate::managed_agents::store_journal::new_operation_id();
+        crate::managed_agents::store_journal::insert_operation(
+            &journal,
+            &pub_op_id,
+            "publish",
+            &team.id,
+            crate::managed_agents::store_journal::Generation::zero(),
+        )?;
+        crate::managed_agents::store_journal::insert_outbox_event(
+            &journal,
+            &event_id,
+            &pub_op_id,
+            raw_json.as_bytes(),
+        )?;
 
         retain_event(
             &conn,
