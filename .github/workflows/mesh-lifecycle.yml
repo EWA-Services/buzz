@@ -12,6 +12,16 @@ on:
   push:
     branches: [main]
     paths:
+      # Production code this smoke actually protects: the relay's NIP-42
+      # membership gate + signed discovery/ingest and NIP-42 verification.
+      # Kept as whole crate trees on purpose — the enforcement spans
+      # handlers/auth.rs, handlers/ingest.rs, and api/relay_members.rs, and a
+      # hand-maintained per-file list would silently rot and reopen the
+      # blind spot. buzz-db is large and frequently touched, so we scope it
+      # to the membership source-of-truth file only.
+      - 'crates/buzz-relay/src/**'
+      - 'crates/buzz-auth/**'
+      - 'crates/buzz-db/src/relay_members.rs'
       - 'crates/buzz-relay/examples/mesh_*.rs'
       - 'crates/buzz-relay/Cargo.toml'
       - 'crates/buzz-admin/**'
@@ -24,6 +34,10 @@ on:
       - '.github/workflows/mesh-lifecycle.yml'
   pull_request:
     paths:
+      # Keep in sync with the push filter above.
+      - 'crates/buzz-relay/src/**'
+      - 'crates/buzz-auth/**'
+      - 'crates/buzz-db/src/relay_members.rs'
       - 'crates/buzz-relay/examples/mesh_*.rs'
       - 'crates/buzz-relay/Cargo.toml'
       - 'crates/buzz-admin/**'
@@ -34,6 +48,11 @@ on:
       - 'scripts/ci-mesh-lifecycle-smoke.sh'
       - 'scripts/start-relay-for-tests.sh'
       - '.github/workflows/mesh-lifecycle.yml'
+  # Weekly drift canary: this smoke also guards against changes with no diff
+  # at all — HuggingFace model availability, runner image updates, and
+  # mesh-llm git-tag re-resolution. Path filters can never catch those.
+  schedule:
+    - cron: '0 9 * * 1'
   workflow_dispatch:
 
 concurrency:
