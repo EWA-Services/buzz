@@ -73,6 +73,7 @@ export const MessageRow = React.memo(
     hoverBackground = true,
     huddleMemberPubkeys,
     huddleMemberPubkeysPending = false,
+    hideAgentAccessBadge = false,
     actionBarPlacement = "floating",
     collapseDescendantsLabel,
     isFollowingThread,
@@ -91,7 +92,6 @@ export const MessageRow = React.memo(
     onMarkRead,
     onToggleReaction,
     onReply,
-    onOpenThread,
     onEntranceComplete,
     playEntrance = false,
     onUnfollowThread,
@@ -111,6 +111,7 @@ export const MessageRow = React.memo(
     hoverBackground?: boolean;
     huddleMemberPubkeys?: readonly string[];
     huddleMemberPubkeysPending?: boolean;
+    hideAgentAccessBadge?: boolean;
     actionBarPlacement?: "floating" | "inside";
     collapseDescendantsLabel?: string;
     isFollowingThread?: boolean;
@@ -139,7 +140,6 @@ export const MessageRow = React.memo(
       remove: boolean,
     ) => Promise<void>;
     onReply?: (message: TimelineMessage) => void;
-    onOpenThread?: (message: TimelineMessage) => void;
     onUnfollowThread?: (message: TimelineMessage) => void;
     onEntranceComplete?: (messageId: string) => void;
     playEntrance?: boolean;
@@ -362,8 +362,8 @@ export const MessageRow = React.memo(
           return (
             <HuddleAttachment
               channelId={channelId}
+              className="mt-2"
               message={message}
-              onOpenThread={onOpenThread}
             />
           );
         default:
@@ -431,7 +431,9 @@ export const MessageRow = React.memo(
           displayName={message.author}
           testId="message-avatar"
         />
-        {showRespondToIndicator && !isThreadReplyLayout ? (
+        {showRespondToIndicator &&
+        !hideAgentAccessBadge &&
+        !isThreadReplyLayout ? (
           <span
             className={cn(
               "absolute -bottom-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-background",
@@ -906,6 +908,7 @@ export const MessageRow = React.memo(
     prev.hoverBackground === next.hoverBackground &&
     prev.huddleMemberPubkeys === next.huddleMemberPubkeys &&
     prev.huddleMemberPubkeysPending === next.huddleMemberPubkeysPending &&
+    prev.hideAgentAccessBadge === next.hideAgentAccessBadge &&
     prev.isContinuation === next.isContinuation &&
     prev.isFollowingThread === next.isFollowingThread &&
     prev.isUnread === next.isUnread &&
