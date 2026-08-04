@@ -407,9 +407,8 @@ class ComposeBar extends HookConsumerWidget {
           uploadingCount.value > 0) {
         return;
       }
-      // Resolved before any await: a community switch mid-send rebuilds the
-      // composer and resets its own error state, so the messenger is the only
-      // surface that survives to report the failure.
+      // Resolved before any await: see
+      // `_reportSendCancelledByCommunitySwitch`.
       final messenger = ScaffoldMessenger.maybeOf(context);
 
       // Extract pubkeys for mentions present in the final text.
@@ -485,21 +484,12 @@ class ComposeBar extends HookConsumerWidget {
       final queuedAttachments = List<_PendingAttachment>.of(attachments.value);
       final channelActions = ref.read(channelActionsProvider);
 
-      Future<void> addMentionedNonMembers() async {
-        if (nonMemberAgentPubkeys.isNotEmpty) {
-          await channelActions.addMembers(
-            channelId: channelId,
-            pubkeys: nonMemberAgentPubkeys,
-            role: 'bot',
-          );
-        }
-        if (inviteHumanPubkeys.isNotEmpty) {
-          await channelActions.addMembers(
-            channelId: channelId,
-            pubkeys: inviteHumanPubkeys,
-          );
-        }
-      }
+      Future<void> addMentionedNonMembers() => _addMentionedNonMembers(
+        channelActions,
+        channelId: channelId,
+        agentPubkeys: nonMemberAgentPubkeys,
+        humanPubkeys: inviteHumanPubkeys,
+      );
 
       isSending.value = true;
       try {
@@ -518,16 +508,7 @@ class ComposeBar extends HookConsumerWidget {
             );
             if (context.mounted) clearComposer();
           } on StateError {
-            // The active community changed mid-send, so this message can no
-            // longer be delivered where it was composed. Report it: the send
-            // path is fire-and-forget, so an escaping error would be silent.
-            // The composer's own error line cannot carry this, because the
-            // identity change resets that state on the next frame.
-            messenger?.showSnackBar(
-              const SnackBar(
-                content: Text('Message not sent: the community changed'),
-              ),
-            );
+            _reportSendCancelledByCommunitySwitch(messenger);
           }
           return;
         }
