@@ -14,8 +14,6 @@ use super::{
     Generation, InsertEventOutcome, JournalLockGuard, TransitionOutcome,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn in_memory_journal() -> Connection {
     let conn = Connection::open(":memory:").unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -26,8 +24,6 @@ fn in_memory_journal() -> Connection {
 fn tmp_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("create temp dir")
 }
-
-// ── Generation CAS ────────────────────────────────────────────────────────────
 
 #[test]
 fn test_cas_generation_first_write_succeeds() {
@@ -74,8 +70,6 @@ fn test_cas_generation_monotonically_increasing() {
         );
     }
 }
-
-// ── Tombstone / ABA rejection ─────────────────────────────────────────────────
 
 #[test]
 fn test_tombstone_prevents_aba_recreate() {
@@ -129,8 +123,6 @@ fn test_tombstone_at_wrong_generation_conflicts() {
         "expected conflict, got {result:?}"
     );
 }
-
-// ── Operations (saga spine) ───────────────────────────────────────────────────
 
 #[test]
 fn test_insert_and_read_operation() {
@@ -227,8 +219,6 @@ fn test_read_nonterminal_operations_excludes_terminal() {
     );
 }
 
-// ── Immutable inbox / outbox ──────────────────────────────────────────────────
-
 #[test]
 fn test_outbox_insert_is_idempotent() {
     let conn = in_memory_journal();
@@ -278,8 +268,6 @@ fn test_inbox_insert_is_idempotent() {
     assert_eq!(rows[0].1, payload);
 }
 
-// ── Fail-closed codec ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_decode_agent_store_empty_array_ok() {
     let bytes = b"[]";
@@ -304,8 +292,6 @@ fn test_decode_team_store_malformed_fails_closed() {
     let bytes = b"bare string";
     assert!(decode_team_store(bytes).is_err());
 }
-
-// ── Atomic write (fsync path) ─────────────────────────────────────────────────
 
 #[test]
 fn test_atomic_write_with_fsync_roundtrip() {
@@ -341,8 +327,6 @@ fn test_atomic_write_with_fsync_first_boot_no_file() {
     assert_eq!(std::fs::read(&path).unwrap(), b"[]");
 }
 
-// ── Store-family anchor ───────────────────────────────────────────────────────
-
 #[test]
 fn test_canonical_dev_anchor_from_dev_data_dir() {
     use std::path::PathBuf;
@@ -367,8 +351,6 @@ fn test_canonical_dev_anchor_from_production_data_dir_is_none() {
         "production dir should not produce a dev anchor"
     );
 }
-
-// ── Saga crash recovery ───────────────────────────────────────────────────────
 
 #[test]
 fn test_saga_crash_mid_compensation_recovers() {
@@ -417,8 +399,6 @@ fn test_saga_uncertain_publication_sets_follow_up() {
     assert!(!op2.nonterminal_follow_up);
 }
 
-// ── Two cooperating processes: anchored lock serialises mutations ─────────────
-
 #[test]
 fn test_two_threads_serialised_by_advisory_lock() {
     let dir = tmp_dir();
@@ -445,8 +425,6 @@ fn test_two_threads_serialised_by_advisory_lock() {
     handle.join().unwrap();
 }
 
-// ── First-boot: absent JSON files ─────────────────────────────────────────────
-
 #[test]
 fn test_open_journal_creates_on_first_boot() {
     let dir = tmp_dir();
@@ -465,8 +443,6 @@ fn test_decode_agent_store_absent_file_empty_vec() {
     let result = decode_agent_store(b"[]").unwrap();
     assert!(result.is_empty());
 }
-
-// ── Fenced CAS conflict detection ─────────────────────────────────────────────
 
 #[test]
 fn test_advance_disposition_wrong_expected_returns_conflict() {
@@ -506,8 +482,6 @@ fn test_advance_disposition_not_found_returns_not_found() {
     assert_eq!(outcome, TransitionOutcome::NotFound);
 }
 
-// ── Anchor determination: two worktree identities → same canonical anchor ──────
-
 #[test]
 fn test_two_dev_worktree_paths_resolve_to_same_canonical_anchor() {
     use std::path::PathBuf;
@@ -529,8 +503,6 @@ fn test_two_dev_worktree_paths_resolve_to_same_canonical_anchor() {
     assert_eq!(anchor_a.unwrap(), expected);
 }
 
-// ── Malformed-store fail-closed: bytes stay byte-identical ────────────────────
-
 #[test]
 fn test_mutate_store_malformed_agents_json_is_fail_closed() {
     let dir = tmp_dir();
@@ -546,8 +518,6 @@ fn test_mutate_store_malformed_agents_json_is_fail_closed() {
     // Bytes on disk must be byte-identical — no mutation.
     assert_eq!(std::fs::read(&agents_path).unwrap(), bad_bytes);
 }
-
-// ── deny_unknown_fields: unknown top-level and per-record fields ───────────────
 
 #[test]
 fn test_decode_agent_store_unknown_field_fails_closed() {
@@ -577,8 +547,6 @@ fn test_decode_team_store_unknown_field_fails_closed() {
         "unknown field in TeamRecord must cause a decode error (deny_unknown_fields)"
     );
 }
-
-// ── Two cooperating processes: live mutate_store path ─────────────────────────
 
 #[test]
 fn test_two_threads_serialised_by_advisory_lock_via_journal() {
@@ -616,8 +584,6 @@ fn test_two_threads_serialised_by_advisory_lock_via_journal() {
     assert_eq!(final_val, 1, "B must observe A's committed write");
 }
 
-// ── Restart / reopen: nonterminal operations recovered by actual recovery driver
-
 /// Verify that a nonterminal pending operation with no outbox evidence is
 /// advanced to Failed by run_boot_recovery_at (real journal close + reopen).
 #[test]
@@ -653,14 +619,14 @@ fn test_boot_recovery_marks_no_evidence_op_failed_on_reopen() {
     assert_eq!(
         op.disposition,
         Disposition::Failed,
-        "no-evidence op must be Failed after recovery"
+        "no-evidence op must be Failed"
     );
     // The operation must be terminal and excluded from future nonterminal reads.
     assert!(op.disposition.is_terminal());
     let remaining = read_nonterminal_operations(&journal).unwrap();
     assert!(
         remaining.iter().all(|o| o.operation_id != "op-crash-1"),
-        "failed op must not appear in nonterminal operations after recovery"
+        "failed op must not appear in nonterminal"
     );
 }
 
@@ -698,12 +664,12 @@ fn test_boot_recovery_leaves_pending_outbox_op_for_redriving() {
     assert_eq!(
         op.disposition,
         Disposition::Pending,
-        "op with pending outbox must stay Pending for the flush loop"
+        "op with pending outbox must stay Pending"
     );
     let nonterminal = read_nonterminal_operations(&journal).unwrap();
     assert!(
         nonterminal.iter().any(|o| o.operation_id == "op-outbox-1"),
-        "op with pending outbox must appear in nonterminal list for flush loop"
+        "op must be nonterminal"
     );
 }
 
@@ -740,19 +706,12 @@ fn test_boot_recovery_keyring_write_with_inbox_marks_failed() {
     assert_eq!(
         op.disposition,
         Disposition::Failed,
-        "interrupted keyring_write must be Failed so inline fallback re-migrates"
+        "interrupted keyring_write must be Failed"
     );
 }
 
-// ── Two independent processes serialised by the advisory lock ─────────────────
-
-/// Helper mode: when `STORE_JOURNAL_TEST_ROLE=writer` is set, this process
-/// acts as the writer subprocess. Acquires the advisory lock, appends "from-writer\n"
-/// to `<dir>/output.txt`, holds the lock for 50ms, then exits.
-///
-/// This function is called from a `#[test]` helper-mode check at the top of
-/// the module. It does NOT use `#[test]` itself — it runs when the test binary
-/// is re-invoked as a subprocess.
+/// Subprocess helper: when `STORE_JOURNAL_TEST_ROLE` is set, runs the named role
+/// (writer, json_mutator) and exits. No-op on normal test runs.
 #[doc(hidden)]
 pub fn maybe_run_subprocess_helper() {
     let role = std::env::var("STORE_JOURNAL_TEST_ROLE").unwrap_or_default();
@@ -926,8 +885,6 @@ fn test_two_processes_no_lost_json_update() {
     );
 }
 
-// ── Crash-boundary fixtures: two-phase file-commit recovery ───────────────────
-
 /// Build a minimal well-formed `ManagedAgentRecord` JSON list with one record.
 fn minimal_agents_json(pubkey: &str) -> Vec<u8> {
     let records: Vec<crate::managed_agents::ManagedAgentRecord> = serde_json::from_str(&format!(
@@ -961,56 +918,48 @@ fn insert_file_commit_phase_row(
     .unwrap();
 }
 
-/// Three crash scenarios for the two-phase file-commit protocol, driven by
-/// the real `run_boot_recovery_at` path-level API:
-///
-///   1. `intent`: both stage files present, neither canonical → both renames replayed.
-///   2. `first_renamed` (teams pending): agents canonical + teams stage → teams rename only.
-///   3. `first_renamed` (both done): both canonicals + no stages → no-op, no corruption.
+/// Three crash scenarios for the two-phase file-commit protocol (intent,
+/// first_renamed+pending, first_renamed+done), driven by `run_boot_recovery_at`.
 #[test]
+#[allow(clippy::type_complexity)]
 fn test_crash_recovery_file_commit_phases() {
     use super::run_boot_recovery_at;
 
-    struct Case {
-        phase: &'static str,
-        commit_id: &'static str,
-        /// Which files pre-exist before recovery (agents_stage, teams_stage, agents_can, teams_can)
-        pre: (bool, bool, bool, bool),
-        /// Which files must exist after recovery (agents_can, teams_can)
-        post_exist: (bool, bool),
-        /// Which stage files must be absent after recovery
-        post_absent: (bool, bool),
-        pubkey: &'static str,
-    }
-
-    let cases = [
-        Case {
-            phase: "intent",
-            commit_id: "cc-1",
-            pre: (true, true, false, false),
-            post_exist: (true, true),
-            post_absent: (true, true),
-            pubkey: "crash1",
-        },
-        Case {
-            phase: "first_renamed",
-            commit_id: "cc-2",
-            pre: (false, true, true, false),
-            post_exist: (true, true),
-            post_absent: (false, true),
-            pubkey: "crash2",
-        },
-        Case {
-            phase: "first_renamed",
-            commit_id: "cc-3",
-            pre: (false, false, true, true),
-            post_exist: (true, true),
-            post_absent: (true, true),
-            pubkey: "crash3",
-        },
+    // (phase, commit_id, [a_stage,t_stage,a_can,t_can] pre-exist, a_can post, t_can post, pubkey)
+    let cases: &[(&str, &str, [bool; 4], bool, bool, &str)] = &[
+        (
+            "intent",
+            "cc-1",
+            [true, true, false, false],
+            true,
+            true,
+            "crash1",
+        ),
+        (
+            "first_renamed",
+            "cc-2",
+            [false, true, true, false],
+            true,
+            true,
+            "crash2",
+        ),
+        (
+            "first_renamed",
+            "cc-3",
+            [false, false, true, true],
+            true,
+            true,
+            "crash3",
+        ),
     ];
 
-    for c in &cases {
+    fn wr(flag: bool, p: &std::path::Path, d: Vec<u8>) {
+        if flag {
+            std::fs::write(p, d).unwrap();
+        }
+    }
+
+    for (phase, cid, pre, a_exists, t_exists, pk) in cases {
         let dir = tmp_dir();
         let anchor = dir.path().to_path_buf();
         let a_stage = anchor.join("managed-agents.json.stage");
@@ -1018,56 +967,30 @@ fn test_crash_recovery_file_commit_phases() {
         let a_can = anchor.join("managed-agents.json");
         let t_can = anchor.join("teams.json");
 
-        if c.pre.0 {
-            std::fs::write(&a_stage, minimal_agents_json(c.pubkey)).unwrap();
-        }
-        if c.pre.1 {
-            std::fs::write(&t_stage, empty_teams_json()).unwrap();
-        }
-        if c.pre.2 {
-            std::fs::write(&a_can, minimal_agents_json(c.pubkey)).unwrap();
-        }
-        if c.pre.3 {
-            std::fs::write(&t_can, empty_teams_json()).unwrap();
-        }
+        wr(pre[0], &a_stage, minimal_agents_json(pk));
+        wr(pre[1], &t_stage, empty_teams_json());
+        wr(pre[2], &a_can, minimal_agents_json(pk));
+        wr(pre[3], &t_can, empty_teams_json());
 
-        {
-            let j = open_journal(&anchor).unwrap();
-            insert_file_commit_phase_row(
-                &j,
-                c.commit_id,
-                c.phase,
-                a_stage.to_str().unwrap(),
-                t_stage.to_str().unwrap(),
-            );
-        }
+        let j = open_journal(&anchor).unwrap();
+        insert_file_commit_phase_row(
+            &j,
+            cid,
+            phase,
+            a_stage.to_str().unwrap(),
+            t_stage.to_str().unwrap(),
+        );
+        drop(j);
 
         run_boot_recovery_at(&anchor, None).unwrap();
 
-        assert_eq!(
-            a_can.exists(),
-            c.post_exist.0,
-            "{} agents_can after recovery",
-            c.pubkey
-        );
-        assert_eq!(
-            t_can.exists(),
-            c.post_exist.1,
-            "{} teams_can after recovery",
-            c.pubkey
-        );
-        if c.post_absent.0 {
-            assert!(!a_stage.exists(), "{} agents_stage must be gone", c.pubkey);
-        }
-        if c.post_absent.1 {
-            assert!(!t_stage.exists(), "{} teams_stage must be gone", c.pubkey);
-        }
+        assert_eq!(a_can.exists(), *a_exists, "{pk} agents_can");
+        assert_eq!(t_can.exists(), *t_exists, "{pk} teams_can");
 
-        // Verify canonical content is well-formed where it exists.
-        if c.post_exist.0 {
+        if *a_exists {
             let recs = decode_agent_store(&std::fs::read(&a_can).unwrap()).unwrap();
             assert_eq!(recs.len(), 1);
-            assert_eq!(recs[0].pubkey, c.pubkey);
+            assert_eq!(recs[0].pubkey, *pk);
         }
     }
 }
