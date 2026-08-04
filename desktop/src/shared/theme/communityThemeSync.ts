@@ -71,6 +71,7 @@ export class CommunityThemeSyncManager {
   private lastRemoteCreatedAt = 0;
   private lastPublished: PublishedCommunityTheme | null = null;
   private pending: CommunityThemePreference | null = null;
+  private publishInFlight = false;
   private publishRetryAttempt = 0;
   private readonly onPublished: (published: PublishedCommunityTheme) => void;
 
@@ -108,21 +109,35 @@ export class CommunityThemeSyncManager {
     if (this.destroyed) return;
     this.pending = preference;
     this.publishRetryAttempt = 0;
-    this.schedulePublish(preference, DEBOUNCE_MS);
+    this.schedulePublish(DEBOUNCE_MS);
   }
 
-  private schedulePublish(
-    preference: CommunityThemePreference,
-    delayMs: number,
-  ): void {
+  private schedulePublish(delayMs: number): void {
     if (this.destroyed) return;
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }
     this.debounceTimer = window.setTimeout(() => {
       this.debounceTimer = null;
-      void this.doPublish(preference);
+      this.startPublish();
     }, delayMs);
+  }
+
+  private startPublish(): void {
+    if (this.destroyed || this.publishInFlight || !this.pending) return;
+    this.publishInFlight = true;
+    const preference = this.pending;
+    void this.doPublish(preference).finally(() => {
+      this.publishInFlight = false;
+      if (
+        !this.destroyed &&
+        this.pending &&
+        !sameCommunityThemePreference(this.pending, preference) &&
+        this.debounceTimer === null
+      ) {
+        this.schedulePublish(0);
+      }
+    });
   }
 
   getPending(): CommunityThemePreference | null {
@@ -218,7 +233,7 @@ export class CommunityThemeSyncManager {
         PUBLISH_RETRY_MAX_MS,
       );
       this.publishRetryAttempt += 1;
-      this.schedulePublish(preference, delay);
+      this.schedulePublish(delay);
     }
   }
 

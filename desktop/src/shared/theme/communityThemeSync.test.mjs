@@ -194,6 +194,60 @@ test("new remote invalidates no-op suppression for A to B to A", async () => {
   }
 });
 
+test("serializes an in-flight publish before sending the latest edit", async () => {
+  const timer = installFakeTimer();
+  const first = Promise.withResolvers();
+  const published = [];
+  let signed = 0;
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      if (command === "nip44_encrypt_to_self") return Promise.resolve("cipher");
+      if (command === "sign_event") {
+        signed += 1;
+        return Promise.resolve(
+          JSON.stringify(
+            relayEvent({
+              id: `event-${signed}`,
+              content: args.content,
+              created_at: args.createdAt,
+            }),
+          ),
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  };
+  mock.method(relayClient, "publishEvent", (event) => {
+    published.push(event);
+    return published.length === 1 ? first.promise : Promise.resolve();
+  });
+  try {
+    const manager = new CommunityThemeSyncManager("alice");
+    manager.publish(preference);
+    timer.fire();
+    await waitUntil(() => published.length === 1);
+
+    const latest = { ...preference, theme: "dracula" };
+    manager.publish(latest);
+    timer.fire();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(published.length, 1);
+
+    first.resolve();
+    await waitUntil(() => timer.pending());
+    assert.equal(timer.delay(), 0);
+    timer.fire();
+    await waitUntil(() => published.length === 2);
+
+    assert.ok(published[1].created_at > published[0].created_at);
+    assert.deepEqual(manager.getPending(), null);
+  } finally {
+    delete globalThis.window.__TAURI_INTERNALS__;
+    timer.restore();
+    mock.reset();
+  }
+});
+
 test("transient publish failure retries and acknowledges exact event", async () => {
   const timer = installFakeTimer();
   const published = [];
