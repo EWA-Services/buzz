@@ -204,7 +204,35 @@ pub async fn create_team(input: CreateTeamRequest, app: AppHandle) -> Result<Tea
             updated_at: now,
         };
         let team_for_closure = team.clone();
-        let ((), _guard) = mutate_team_store(&app, store_guard, move |mut teams, _journal| {
+        let team_id_for_closure = team.id.clone();
+        let ((), _guard) = mutate_team_store(&app, store_guard, move |mut teams, journal| {
+            // Journal: record create operation + CAS generation for this team id.
+            let op_id = crate::managed_agents::store_journal::new_operation_id();
+            crate::managed_agents::store_journal::insert_operation(
+                journal,
+                &op_id,
+                "create",
+                &team_id_for_closure,
+                crate::managed_agents::store_journal::Generation::zero(),
+            )?;
+            match crate::managed_agents::store_journal::cas_generation(
+                journal,
+                &team_id_for_closure,
+                crate::managed_agents::store_journal::Generation::zero(),
+            )? {
+                crate::managed_agents::store_journal::CasOutcome::Committed { .. } => {}
+                crate::managed_agents::store_journal::CasOutcome::Tombstoned { .. } => {
+                    return Err(format!(
+                        "team {team_id_for_closure}: id previously tombstoned — cannot recreate"
+                    ));
+                }
+                crate::managed_agents::store_journal::CasOutcome::Conflict { current } => {
+                    return Err(format!(
+                        "team {team_id_for_closure}: generation conflict (expected 0, current {})",
+                        current.0
+                    ));
+                }
+            }
             teams.push(team_for_closure);
             Ok((teams, ()))
         })?;
@@ -233,20 +261,47 @@ pub async fn update_team(input: UpdateTeamRequest, app: AppHandle) -> Result<Tea
         ensure_persona_ids_are_active(&personas, &input.persona_ids)?;
         let target_id = input.id.clone();
         let now2 = now_iso();
-        let (updated, _guard) =
-            mutate_team_store(&app, store_guard, move |mut teams, _journal| {
-                let team = teams
-                    .iter_mut()
-                    .find(|record| record.id == target_id)
-                    .ok_or_else(|| format!("team {target_id} not found"))?;
-                team.name = name;
-                team.description = description;
-                team.instructions = instructions;
-                team.persona_ids = input.persona_ids;
-                team.updated_at = now2;
-                let updated = team.clone();
-                Ok((teams, updated))
-            })?;
+        let (updated, _guard) = mutate_team_store(&app, store_guard, move |mut teams, journal| {
+            let team = teams
+                .iter_mut()
+                .find(|record| record.id == target_id)
+                .ok_or_else(|| format!("team {target_id} not found"))?;
+            // Read the current generation and CAS to next — detects concurrent
+            // writes from another process holding the same advisory lock.
+            let op_id = crate::managed_agents::store_journal::new_operation_id();
+            let (current_gen, _) =
+                crate::managed_agents::store_journal::read_generation(journal, &target_id)?;
+            crate::managed_agents::store_journal::insert_operation(
+                journal,
+                &op_id,
+                "update",
+                &target_id,
+                current_gen,
+            )?;
+            match crate::managed_agents::store_journal::cas_generation(
+                journal,
+                &target_id,
+                current_gen,
+            )? {
+                crate::managed_agents::store_journal::CasOutcome::Committed { .. } => {}
+                crate::managed_agents::store_journal::CasOutcome::Tombstoned { .. } => {
+                    return Err(format!("team {target_id}: tombstoned — cannot update"));
+                }
+                crate::managed_agents::store_journal::CasOutcome::Conflict { current } => {
+                    return Err(format!(
+                        "team {target_id}: generation conflict (expected {}, current {})",
+                        current_gen.0, current.0
+                    ));
+                }
+            }
+            team.name = name;
+            team.description = description;
+            team.instructions = instructions;
+            team.persona_ids = input.persona_ids;
+            team.updated_at = now2;
+            let updated = team.clone();
+            Ok((teams, updated))
+        })?;
         // Built-in teams are not owner-authored — never publish them.
         if !updated.is_builtin {
             retain_team_pending(&app, &state, &updated);

@@ -940,8 +940,11 @@ pub async fn update_managed_agent(
         for pk in &exited_pubkeys {
             state.clear_agent_session_caches(pk);
         }
+        // Retain first (inserts outbox evidence linked to op_id), then advance
+        // the operation to Committed — guarantees outbox row exists before op
+        // reaches terminal state.
+        super::agents::retain_managed_agent_pending(&app, &state, &record_out, Some(&op_id));
         crate::managed_agents::store_journal::advance_to_committed(&app, &op_id);
-        super::agents::retain_managed_agent_pending(&app, &state, &record_out, None);
 
         let sync_params = if name_changed {
             let agent_keys = Keys::parse(&record_out.private_key_nsec)

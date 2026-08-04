@@ -650,8 +650,15 @@ pub async fn confirm_team_snapshot_import(
             .iter()
             .map(|m| m.definition.clone().into_agent_record())
             .collect();
-        let new_instances: Vec<ManagedAgentRecord> =
+        // Keyring migration runs OUTSIDE the mutate_store critical section —
+        // keyring I/O must never hold the OS advisory lock or the in-process
+        // mutex.  We run it here on a save-local clone; on success the nsec is
+        // cleared from the clone so the written file stores no plaintext key.
+        // If mutate_store subsequently fails the key is safely in the keyring
+        // (idempotent next write) and the record is simply not persisted yet.
+        let mut new_instances: Vec<ManagedAgentRecord> =
             minted.iter().map(|m| m.record.clone()).collect();
+        crate::managed_agents::storage::persist_agent_keys_pub(&mut new_instances);
         let new_team = imported_team.clone();
 
         // Record the operation in the journal before the file write.
@@ -683,15 +690,46 @@ pub async fn confirm_team_snapshot_import(
                 });
                 all_agents.extend(sorted_defs);
 
-                // Persist keys for new instances; append after sorting.
+                // Instances have already had keyring migration applied outside
+                // the lock.  Sort and append — no keyring I/O inside closure.
                 let mut sorted_instances = new_instances;
-                crate::managed_agents::storage::persist_agent_keys_pub(&mut sorted_instances);
                 sorted_instances.sort_by(|a, b| {
                     a.name
                         .to_lowercase()
                         .cmp(&b.name.to_lowercase())
                         .then_with(|| a.pubkey.cmp(&b.pubkey))
                 });
+
+                // CAS each new instance at generation 0 — reject if the pubkey
+                // is already present (duplicate or tombstoned from a prior import).
+                for instance in &sorted_instances {
+                    if instance.pubkey.is_empty() {
+                        continue;
+                    }
+                    match crate::managed_agents::store_journal::cas_generation(
+                        st.journal,
+                        &instance.pubkey,
+                        crate::managed_agents::store_journal::Generation::zero(),
+                    )? {
+                        crate::managed_agents::store_journal::CasOutcome::Committed { .. } => {}
+                        crate::managed_agents::store_journal::CasOutcome::Tombstoned {
+                            tombstone_generation,
+                        } => {
+                            return Err(format!(
+                                "team-import: agent {} is tombstoned at generation {} \
+                                 — cannot re-import a deleted identity",
+                                instance.pubkey, tombstone_generation.0
+                            ));
+                        }
+                        crate::managed_agents::store_journal::CasOutcome::Conflict { current } => {
+                            return Err(format!(
+                                "team-import: agent {} already exists (generation {})",
+                                instance.pubkey, current.0
+                            ));
+                        }
+                    }
+                }
+
                 all_agents.extend(sorted_instances);
 
                 // Append the new team record.
@@ -714,9 +752,8 @@ pub async fn confirm_team_snapshot_import(
             )?;
         }
 
-        // Keyring cleanup is already handled by persist_agent_keys_pub inside
-        // the closure above.  On failure the closure returns Err and mutate_store
-        // propagates it before writing any file — no rollback required.
+        // Keyring migration was completed above before mutate_store; no
+        // further keyring work required here.
 
         // All writes committed — safe to update in-memory state.
         for m in &minted {

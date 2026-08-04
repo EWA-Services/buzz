@@ -237,7 +237,24 @@ pub async fn delete_persona(id: String, app: AppHandle) -> Result<(), String> {
             let store_guard = if !cascade.is_empty() {
                 let cascade_for_closure = cascade.clone();
                 let ((), sg) =
-                    mutate_agent_store(&app, store_guard, move |mut instances, _journal| {
+                    mutate_agent_store(&app, store_guard, move |mut instances, journal| {
+                        // Tombstone each cascaded agent pubkey in the journal before
+                        // removing the record — mirrors the single-agent delete path.
+                        for pubkey in &cascade_for_closure {
+                            if pubkey.is_empty() {
+                                continue;
+                            }
+                            let (current_gen, _) =
+                                crate::managed_agents::store_journal::read_generation(
+                                    journal,
+                                    pubkey,
+                                )?;
+                            crate::managed_agents::store_journal::tombstone_key(
+                                journal,
+                                pubkey,
+                                current_gen,
+                            )?;
+                        }
                         instances.retain(|a| !cascade_for_closure.contains(&a.pubkey));
                         Ok((instances, ()))
                     })?;

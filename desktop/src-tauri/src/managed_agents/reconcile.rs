@@ -198,5 +198,38 @@ pub(crate) fn retain_agent_record(
     Ok(Some((event_id, raw_json)))
 }
 
+/// Build the kind:30177 event for `record` and compare it against the
+/// retained head, WITHOUT writing to the retention DB.
+///
+/// Returns `Some((event, owner_pubkey))` when the content has changed or
+/// there is no retained head — i.e. a new row is needed.  Returns `None`
+/// when the retained content already matches (true no-op).
+///
+/// Callers pass the returned event identity to
+/// [`crate::managed_agents::store_journal::prepare_publication`], which
+/// atomically records outbox evidence and the retention row.
+pub(crate) fn build_agent_event_if_changed(
+    conn: &rusqlite::Connection,
+    keys: &nostr::Keys,
+    record: &ManagedAgentRecord,
+) -> Result<Option<(nostr::Event, String)>, String> {
+    let owner_pubkey = keys.public_key().to_hex();
+    let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, &record.pubkey)?;
+
+    let event = build_agent_event(record)?
+        .custom_created_at(monotonic_created_at(
+            existing.as_ref().map(|row| row.created_at),
+        ))
+        .sign_with_keys(keys)
+        .map_err(|e| format!("failed to sign event for '{}': {e}", record.name))?;
+
+    let content = event.content.clone();
+    if existing.as_ref().is_some_and(|row| row.content == content) {
+        return Ok(None);
+    }
+
+    Ok(Some((event, owner_pubkey)))
+}
+
 #[cfg(test)]
 mod tests;

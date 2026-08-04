@@ -63,7 +63,6 @@ pub use operations::{
 pub use schema::apply_journal_schema_pub;
 pub use schema::open_journal;
 
-#[allow(unused_imports)] // prepare_publication is a pre-wired B1 API; callers added in B1.1
 pub use txn::{
     advance_to_committed, mutate_store, prepare_publication, run_boot_recovery, StoreState,
 };

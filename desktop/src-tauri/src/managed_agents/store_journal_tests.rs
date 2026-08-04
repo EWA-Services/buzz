@@ -380,13 +380,10 @@ fn test_saga_crash_mid_compensation_recovers() {
     cas_generation(&conn, "k1", Generation(0)).unwrap();
     pin_compensation(&conn, "op-crash", "comp-1", Generation(1)).unwrap();
 
-    // "Recovery" pass: read nonterminal ops.
     let ops = read_nonterminal_operations(&conn).unwrap();
     assert_eq!(ops.len(), 1);
-    let op = &ops[0];
-    assert_eq!(op.disposition, Disposition::Compensating);
-    assert_eq!(op.compensation_id.as_deref(), Some("comp-1"));
-    // Recovery can now re-drive the compensation from the pinned claim.
+    assert_eq!(ops[0].disposition, Disposition::Compensating);
+    assert_eq!(ops[0].compensation_id.as_deref(), Some("comp-1"));
 }
 
 #[test]
@@ -406,7 +403,6 @@ fn test_saga_uncertain_publication_sets_follow_up() {
     assert!(op.disposition.requires_follow_up());
     assert!(op.nonterminal_follow_up);
 
-    // After confirmation, mark as committed and clear follow-up.
     advance_disposition(
         &conn,
         "op-unc",
@@ -486,7 +482,7 @@ fn test_advance_disposition_wrong_expected_returns_conflict() {
     .unwrap();
     assert!(
         matches!(outcome, TransitionOutcome::Conflict { .. }),
-        "wrong expected_disposition must return Conflict, got {outcome:?}"
+        "wrong expected must → Conflict"
     );
     // Op must still be Pending — no silent mutation.
     let op = read_operation(&conn, "op-conflict").unwrap().unwrap();
@@ -515,31 +511,20 @@ fn test_advance_disposition_not_found_returns_not_found() {
 #[test]
 fn test_two_dev_worktree_paths_resolve_to_same_canonical_anchor() {
     use std::path::PathBuf;
-    // Simulate two independently resolved worktree AppDataDirs under the same
-    // macOS parent directory.  Neither branch's canonical dir need exist on disk
-    // — the anchor is returned unconditionally (lock acquisition creates it).
     let branch_a =
         PathBuf::from("/Library/Application Support/xyz.block.buzz.app.dev.branch-a/agents");
     let branch_b =
         PathBuf::from("/Library/Application Support/xyz.block.buzz.app.dev.branch-b/agents");
-
     let anchor_a = canonical_dev_anchor_pub(&branch_a);
     let anchor_b = canonical_dev_anchor_pub(&branch_b);
-
-    // Both must resolve to the same canonical dev agents/ dir.
     assert!(
         anchor_a.is_some(),
         "branch-a must resolve to a canonical anchor"
     );
-    assert!(
-        anchor_b.is_some(),
-        "branch-b must resolve to a canonical anchor"
-    );
     assert_eq!(
         anchor_a, anchor_b,
-        "two dev worktrees must select the same lock/journal authority"
+        "two dev worktrees must select the same anchor"
     );
-
     let expected = PathBuf::from("/Library/Application Support/xyz.block.buzz.app.dev/agents");
     assert_eq!(anchor_a.unwrap(), expected);
 }
@@ -548,30 +533,18 @@ fn test_two_dev_worktree_paths_resolve_to_same_canonical_anchor() {
 
 #[test]
 fn test_mutate_store_malformed_agents_json_is_fail_closed() {
-    // Build a tmp anchor dir with a malformed managed-agents.json.
     let dir = tmp_dir();
-    let anchor = dir.path().to_path_buf();
-    let agents_path = anchor.join("managed-agents.json");
+    let agents_path = dir.path().join("managed-agents.json");
     let bad_bytes = b"{\"this is\":\"not a valid agent array\"}";
     std::fs::write(&agents_path, bad_bytes).unwrap();
 
-    // mutate_store must fail with a decode error — not write anything.
-    let mutex = std::sync::Mutex::new(());
-    let guard = mutex.lock().unwrap();
-
-    // We cannot call mutate_store without an AppHandle, so exercise
-    // decode_agent_store directly — the same fail-closed codec path that
-    // mutate_store uses internally.
-    let result = decode_agent_store(bad_bytes);
-    assert!(result.is_err(), "malformed JSON array must fail closed");
-
-    // Bytes on disk must be byte-identical to the bad input — no mutation.
-    let on_disk = std::fs::read(&agents_path).unwrap();
-    assert_eq!(
-        on_disk, bad_bytes,
-        "malformed store must stay byte-identical after a failed decode"
+    // Exercise decode_agent_store — same fail-closed codec path mutate_store uses.
+    assert!(
+        decode_agent_store(bad_bytes).is_err(),
+        "malformed JSON array must fail closed"
     );
-    drop(guard);
+    // Bytes on disk must be byte-identical — no mutation.
+    assert_eq!(std::fs::read(&agents_path).unwrap(), bad_bytes);
 }
 
 // ── deny_unknown_fields: unknown top-level and per-record fields ───────────────
@@ -609,10 +582,6 @@ fn test_decode_team_store_unknown_field_fails_closed() {
 
 #[test]
 fn test_two_threads_serialised_by_advisory_lock_via_journal() {
-    // Verify that two threads exercising JournalLockGuard on the same anchor
-    // directory are correctly serialised: thread A writes a value, thread B
-    // must read that value (not an empty/stale one) once it acquires the lock.
-    // This exercises the live OS advisory lock on a real filesystem path.
     let dir = tmp_dir();
     let anchor = dir.path().to_path_buf();
     let counter_path = anchor.join("counter.txt");
@@ -624,8 +593,7 @@ fn test_two_threads_serialised_by_advisory_lock_via_journal() {
     let barrier = Arc::new(Barrier::new(2));
     let barrier2 = barrier.clone();
 
-    // Thread A: acquire lock, read+increment, hold briefly, write, release.
-    let handle = std::thread::spawn(move || {
+    let handle = thread::spawn(move || {
         let _guard = JournalLockGuard::acquire(&anchor_a).unwrap();
         let v: u32 = std::fs::read_to_string(&counter_a)
             .unwrap()
@@ -633,13 +601,11 @@ fn test_two_threads_serialised_by_advisory_lock_via_journal() {
             .parse()
             .unwrap();
         std::fs::write(&counter_a, (v + 1).to_string()).unwrap();
-        barrier2.wait(); // signal: A has committed its write while holding the lock
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        // Lock released on drop.
+        barrier2.wait();
+        thread::sleep(std::time::Duration::from_millis(20));
     });
 
-    barrier.wait(); // wait until A holds the lock and has written
-                    // Thread B: acquire lock (blocks until A releases), then read.
+    barrier.wait();
     let _guard = JournalLockGuard::acquire(&anchor).unwrap();
     let final_val: u32 = std::fs::read_to_string(&counter_path)
         .unwrap()
@@ -647,12 +613,7 @@ fn test_two_threads_serialised_by_advisory_lock_via_journal() {
         .parse()
         .unwrap();
     handle.join().unwrap();
-
-    // B must see A's write — counter must be 1, not 0.
-    assert_eq!(
-        final_val, 1,
-        "B must observe A's committed write under the advisory lock"
-    );
+    assert_eq!(final_val, 1, "B must observe A's committed write");
 }
 
 // ── Restart / reopen: nonterminal operations recovered by actual recovery driver
@@ -682,7 +643,7 @@ fn test_boot_recovery_marks_no_evidence_op_failed_on_reopen() {
     }
 
     // Phase 2: run_boot_recovery_at opens a fresh connection (real reopen).
-    run_boot_recovery_at(&anchor).unwrap();
+    run_boot_recovery_at(&anchor, None).unwrap();
 
     // Phase 3: verify the op was advanced to Failed (no outbox evidence).
     let journal = open_journal(&anchor).unwrap();
@@ -727,7 +688,7 @@ fn test_boot_recovery_leaves_pending_outbox_op_for_redriving() {
     }
 
     // Phase 2: recovery.
-    run_boot_recovery_at(&anchor).unwrap();
+    run_boot_recovery_at(&anchor, None).unwrap();
 
     // Phase 3: op must remain Pending (flush loop re-drives it).
     let journal = open_journal(&anchor).unwrap();
@@ -770,7 +731,7 @@ fn test_boot_recovery_keyring_write_with_inbox_marks_failed() {
         // No outbox event — write was interrupted before completion.
     }
 
-    run_boot_recovery_at(&anchor).unwrap();
+    run_boot_recovery_at(&anchor, None).unwrap();
 
     let journal = open_journal(&anchor).unwrap();
     let op = read_operation(&journal, "op-kr-1")
@@ -816,32 +777,24 @@ pub fn maybe_run_subprocess_helper() {
             std::process::exit(0);
         }
         "json_mutator" => {
-            // Subprocess B for test_two_processes_no_lost_json_update.
-            //
-            // Acquires the advisory lock, fresh-decodes managed-agents.json,
-            // appends one record, and atomically writes back — mirroring what
-            // `mutate_store` does for every real command.
+            // Subprocess B: acquires advisory lock, typed-decodes managed-agents.json
+            // (deny_unknown_fields path, same as mutate_store), appends one record,
+            // atomically writes back — proves no lost-update under OS serialisation.
             let dir = std::env::var("STORE_JOURNAL_TEST_DIR")
                 .expect("STORE_JOURNAL_TEST_DIR must be set for json_mutator role");
             let anchor = std::path::PathBuf::from(&dir);
             let agents_path = anchor.join("managed-agents.json");
-
             let _guard =
                 JournalLockGuard::acquire(&anchor).expect("subprocess: acquire advisory lock");
-
-            // Fresh decode under the lock.
-            let bytes = std::fs::read(&agents_path).expect("subprocess: read agents json");
-            let mut records: Vec<serde_json::Value> =
-                serde_json::from_slice(&bytes).expect("subprocess: decode agents json");
-
-            // Append a new record so the test can count rows.
-            records.push(serde_json::json!({"pubkey": "subprocess_agent"}));
-
-            let payload =
-                serde_json::to_vec_pretty(&records).expect("subprocess: serialize agents json");
-            atomic_write_with_fsync(&agents_path, &payload)
-                .expect("subprocess: atomic write agents json");
-
+            let mut records =
+                decode_agent_store(&std::fs::read(&agents_path).expect("subprocess: read"))
+                    .expect("subprocess: decode");
+            records.extend(
+                decode_agent_store(&minimal_agents_json("subprocess_agent"))
+                    .expect("subprocess: new record"),
+            );
+            let payload = serde_json::to_vec_pretty(&records).expect("subprocess: serialize");
+            atomic_write_with_fsync(&agents_path, &payload).expect("subprocess: write");
             std::process::exit(0);
         }
         _ => {}
@@ -932,25 +885,19 @@ fn test_two_processes_no_lost_json_update() {
     std::fs::create_dir_all(&anchor).unwrap();
     let agents_path = anchor.join("managed-agents.json");
 
-    // Seed: one agent record.
-    std::fs::write(
-        &agents_path,
-        serde_json::to_vec_pretty(&[serde_json::json!({"pubkey": "seed_agent"})]).unwrap(),
-    )
-    .unwrap();
+    // Seed: one valid typed agent record.
+    std::fs::write(&agents_path, minimal_agents_json("seed_agent")).unwrap();
 
     {
         let _guard = JournalLockGuard::acquire(&anchor).unwrap();
 
-        // A: fresh decode, append, write back.
-        let bytes = std::fs::read(&agents_path).unwrap();
-        let mut records: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
-        records.push(serde_json::json!({"pubkey": "process_a_agent"}));
-        let payload = serde_json::to_vec_pretty(&records).unwrap();
-        atomic_write_with_fsync(&agents_path, &payload).unwrap();
+        // A: typed decode → append → write (mirrors mutate_store).
+        let mut records = decode_agent_store(&std::fs::read(&agents_path).unwrap()).unwrap();
+        records.extend(decode_agent_store(&minimal_agents_json("process_a_agent")).unwrap());
+        atomic_write_with_fsync(&agents_path, &serde_json::to_vec_pretty(&records).unwrap())
+            .unwrap();
 
-        // Spawn B while A holds the lock.
-        let exe = std::env::current_exe().expect("current_exe must be available in tests");
+        let exe = std::env::current_exe().expect("current_exe");
         let mut child = std::process::Command::new(&exe)
             .env("STORE_JOURNAL_TEST_ROLE", "json_mutator")
             .env("STORE_JOURNAL_TEST_DIR", anchor.to_str().unwrap())
@@ -958,37 +905,169 @@ fn test_two_processes_no_lost_json_update() {
             .arg("subprocess_mode_check")
             .arg("--test-threads=1")
             .spawn()
-            .expect("failed to spawn json_mutator subprocess");
-
-        // Hold the lock long enough for B to block.
+            .expect("spawn json_mutator");
         std::thread::sleep(std::time::Duration::from_millis(80));
-
-        drop(_guard); // A releases; B may now acquire.
-
-        let status = child.wait().expect("subprocess must finish");
+        drop(_guard);
         assert!(
-            status.success(),
-            "json_mutator subprocess must exit 0, got {status:?}"
+            child.wait().expect("subprocess wait").success(),
+            "json_mutator failed"
         );
     }
 
-    // Final state: seed + A + B = 3 records.  A lost-update would yield 2.
-    let final_bytes = std::fs::read(&agents_path).unwrap();
-    let final_records: Vec<serde_json::Value> = serde_json::from_slice(&final_bytes).unwrap();
-    assert_eq!(
-        final_records.len(),
-        3,
-        "final agent count must be 3 (seed + A + B); got {} — lost-update occurred",
-        final_records.len()
-    );
-    let pubkeys: Vec<&str> = final_records
-        .iter()
-        .filter_map(|r| r["pubkey"].as_str())
-        .collect();
+    // seed + A + B = 3; a lost-update yields 2.
+    let records = decode_agent_store(&std::fs::read(&agents_path).unwrap()).unwrap();
+    let pubkeys: Vec<&str> = records.iter().map(|r| r.pubkey.as_str()).collect();
+    assert_eq!(records.len(), 3, "lost-update: got {pubkeys:?}");
     assert!(
         pubkeys.contains(&"seed_agent")
             && pubkeys.contains(&"process_a_agent")
             && pubkeys.contains(&"subprocess_agent"),
-        "all three agents must be present: {pubkeys:?}"
+        "missing agent: {pubkeys:?}"
     );
+}
+
+// ── Crash-boundary fixtures: two-phase file-commit recovery ───────────────────
+
+/// Build a minimal well-formed `ManagedAgentRecord` JSON list with one record.
+fn minimal_agents_json(pubkey: &str) -> Vec<u8> {
+    let records: Vec<crate::managed_agents::ManagedAgentRecord> = serde_json::from_str(&format!(
+        r#"[{{"pubkey":{pubkey:?},"name":"T","relay_url":"","acp_command":"","agent_command":"",
+             "agent_args":[],"mcp_command":"","turn_timeout_seconds":0,
+             "created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}}]"#
+    ))
+    .expect("minimal_agents_json");
+    serde_json::to_vec_pretty(&records).expect("serialize")
+}
+
+fn empty_teams_json() -> Vec<u8> {
+    serde_json::to_vec_pretty(&serde_json::json!([])).unwrap()
+}
+
+fn insert_file_commit_phase_row(
+    conn: &Connection,
+    commit_id: &str,
+    phase: &str,
+    agents_stage: &str,
+    teams_stage: &str,
+) {
+    conn.execute(
+        "INSERT INTO file_commit_phases
+             (commit_id, operation_id, phase,
+              agents_stage_path, teams_stage_path,
+              created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 0)",
+        rusqlite::params![commit_id, commit_id, phase, agents_stage, teams_stage],
+    )
+    .unwrap();
+}
+
+/// Three crash scenarios for the two-phase file-commit protocol, driven by
+/// the real `run_boot_recovery_at` path-level API:
+///
+///   1. `intent`: both stage files present, neither canonical → both renames replayed.
+///   2. `first_renamed` (teams pending): agents canonical + teams stage → teams rename only.
+///   3. `first_renamed` (both done): both canonicals + no stages → no-op, no corruption.
+#[test]
+fn test_crash_recovery_file_commit_phases() {
+    use super::run_boot_recovery_at;
+
+    struct Case {
+        phase: &'static str,
+        commit_id: &'static str,
+        /// Which files pre-exist before recovery (agents_stage, teams_stage, agents_can, teams_can)
+        pre: (bool, bool, bool, bool),
+        /// Which files must exist after recovery (agents_can, teams_can)
+        post_exist: (bool, bool),
+        /// Which stage files must be absent after recovery
+        post_absent: (bool, bool),
+        pubkey: &'static str,
+    }
+
+    let cases = [
+        Case {
+            phase: "intent",
+            commit_id: "cc-1",
+            pre: (true, true, false, false),
+            post_exist: (true, true),
+            post_absent: (true, true),
+            pubkey: "crash1",
+        },
+        Case {
+            phase: "first_renamed",
+            commit_id: "cc-2",
+            pre: (false, true, true, false),
+            post_exist: (true, true),
+            post_absent: (false, true),
+            pubkey: "crash2",
+        },
+        Case {
+            phase: "first_renamed",
+            commit_id: "cc-3",
+            pre: (false, false, true, true),
+            post_exist: (true, true),
+            post_absent: (true, true),
+            pubkey: "crash3",
+        },
+    ];
+
+    for c in &cases {
+        let dir = tmp_dir();
+        let anchor = dir.path().to_path_buf();
+        let a_stage = anchor.join("managed-agents.json.stage");
+        let t_stage = anchor.join("teams.json.stage");
+        let a_can = anchor.join("managed-agents.json");
+        let t_can = anchor.join("teams.json");
+
+        if c.pre.0 {
+            std::fs::write(&a_stage, minimal_agents_json(c.pubkey)).unwrap();
+        }
+        if c.pre.1 {
+            std::fs::write(&t_stage, empty_teams_json()).unwrap();
+        }
+        if c.pre.2 {
+            std::fs::write(&a_can, minimal_agents_json(c.pubkey)).unwrap();
+        }
+        if c.pre.3 {
+            std::fs::write(&t_can, empty_teams_json()).unwrap();
+        }
+
+        {
+            let j = open_journal(&anchor).unwrap();
+            insert_file_commit_phase_row(
+                &j,
+                c.commit_id,
+                c.phase,
+                a_stage.to_str().unwrap(),
+                t_stage.to_str().unwrap(),
+            );
+        }
+
+        run_boot_recovery_at(&anchor, None).unwrap();
+
+        assert_eq!(
+            a_can.exists(),
+            c.post_exist.0,
+            "{} agents_can after recovery",
+            c.pubkey
+        );
+        assert_eq!(
+            t_can.exists(),
+            c.post_exist.1,
+            "{} teams_can after recovery",
+            c.pubkey
+        );
+        if c.post_absent.0 {
+            assert!(!a_stage.exists(), "{} agents_stage must be gone", c.pubkey);
+        }
+        if c.post_absent.1 {
+            assert!(!t_stage.exists(), "{} teams_stage must be gone", c.pubkey);
+        }
+
+        // Verify canonical content is well-formed where it exists.
+        if c.post_exist.0 {
+            let recs = decode_agent_store(&std::fs::read(&a_can).unwrap()).unwrap();
+            assert_eq!(recs.len(), 1);
+            assert_eq!(recs[0].pubkey, c.pubkey);
+        }
+    }
 }

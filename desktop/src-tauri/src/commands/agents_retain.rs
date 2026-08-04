@@ -4,15 +4,16 @@
 //! logged so a retention or journal hiccup never blocks the disk-authoritative
 //! write.  However, INTERNALLY all evidence is established in a strict order:
 //!
-//!   1. Insert outbox evidence (journal) first — `?`-propagated so a collision
+//!   1. Build the event and compare against the retained head (no DB write yet).
+//!   2. Insert outbox evidence (journal) first — `?`-propagated so a collision
 //!      or journal failure aborts the entire retain.
-//!   2. Only after outbox evidence exists, insert the retention row with
+//!   3. Only after outbox evidence exists, insert the retention row with
 //!      `pending_sync = true`.
 //!
 //! This order guarantees that the flush loop never publishes a row that has no
-//! journal evidence: if we crash after (1) but before (2), boot recovery finds
+//! journal evidence: if we crash after (2) but before (3), boot recovery finds
 //! the pending outbox row and reconcile re-inserts the retention row.  If we
-//! crash after (2), the retention row is already flushable and has its outbox
+//! crash after (3), the retention row is already flushable and has its outbox
 //! evidence counterpart.
 //!
 //! `IdentityCollision` from `insert_outbox_event` is treated as `Err` — it is
@@ -41,27 +42,33 @@ pub(crate) fn retain_managed_agent_pending(
     record: &ManagedAgentRecord,
     op_id: Option<&str>,
 ) {
-    use crate::managed_agents::{reconcile::retain_agent_record, retention::open_retention_db};
+    use crate::managed_agents::{
+        reconcile::build_agent_event_if_changed, retention::open_retention_db,
+    };
+    use nostr::JsonUtil;
 
     let result = (|| -> Result<(), String> {
         let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
         let conn = open_retention_db(&scope.db_path)?;
 
-        // Build the event and compare against the retained head — returns None
-        // when content is unchanged (true no-op: no publish needed).
-        let Some((event_id, raw_json)) = retain_agent_record(&conn, &scope.owner_keys, record)?
+        // Step 1: build the event and compare — returns None when content is
+        // unchanged (true no-op: no publish needed).
+        let Some((event, owner_pubkey)) =
+            build_agent_event_if_changed(&conn, &scope.owner_keys, record)?
         else {
             return Ok(());
         };
 
-        // Open the journal to record outbox evidence.
+        let event_id = event.id.to_hex();
+        let raw_json = event.as_json();
+
+        // Steps 2 + 3: prepare_publication atomically inserts outbox evidence
+        // first, then the retention row — IdentityCollision → Err.
         let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
         std::fs::create_dir_all(&anchor)
             .map_err(|e| format!("create anchor dir for outbox: {e}"))?;
         let journal = crate::managed_agents::store_journal::open_journal(&anchor)?;
 
-        // Determine the effective operation ID — use the provided crud op ID
-        // or mint a publication-only op.
         let pub_op_id: String;
         let effective_op_id: &str = match op_id {
             Some(id) => id,
@@ -78,28 +85,18 @@ pub(crate) fn retain_managed_agent_pending(
             }
         };
 
-        // Insert outbox evidence FIRST — before the retention row is flushable.
-        // IdentityCollision → Err (never silently discarded).
-        use crate::managed_agents::store_journal::InsertEventOutcome;
-        match crate::managed_agents::store_journal::insert_outbox_event(
+        crate::managed_agents::store_journal::prepare_publication(
             &journal,
-            &event_id,
+            &conn,
             effective_op_id,
-            raw_json.as_bytes(),
-        )? {
-            InsertEventOutcome::Inserted | InsertEventOutcome::ExactDuplicate => {}
-            InsertEventOutcome::IdentityCollision => {
-                return Err(format!(
-                    "agent-retain: outbox identity collision on event {event_id} \
-                     (op {effective_op_id})"
-                ));
-            }
-        }
-
-        // Retention row is now flushable — outbox evidence already exists.
-        // (retain_agent_record above already wrote the row with pending_sync=true,
-        // so we just need to confirm no error was returned.)
-        Ok(())
+            &event_id,
+            &raw_json,
+            buzz_core_pkg::kind::KIND_MANAGED_AGENT,
+            &owner_pubkey,
+            &record.pubkey,
+            &event.content,
+            event.created_at.as_secs() as i64,
+        )
     })();
     if let Err(e) = result {
         eprintln!("buzz-desktop: agent-retain: {e}");
@@ -118,10 +115,7 @@ pub(crate) fn tombstone_managed_agent_pending(
 ) {
     use crate::managed_agents::{
         agent_events::build_agent_delete,
-        retention::{
-            delete_retained_event, open_retention_db, retain_event, tombstone_retention_d_tag,
-            RetainedEvent,
-        },
+        retention::{delete_retained_event, open_retention_db, tombstone_retention_d_tag},
     };
     use buzz_core_pkg::kind::KIND_MANAGED_AGENT;
     use nostr::JsonUtil;
@@ -138,7 +132,7 @@ pub(crate) fn tombstone_managed_agent_pending(
         let raw_json = event.as_json();
         let d_tag = tombstone_retention_d_tag(KIND_MANAGED_AGENT, agent_pubkey);
 
-        // Outbox evidence first.
+        // Open journal and retention DB before any writes.
         let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
         std::fs::create_dir_all(&anchor)
             .map_err(|e| format!("create anchor dir for tombstone outbox: {e}"))?;
@@ -151,35 +145,22 @@ pub(crate) fn tombstone_managed_agent_pending(
             agent_pubkey,
             crate::managed_agents::store_journal::Generation::zero(),
         )?;
-        use crate::managed_agents::store_journal::InsertEventOutcome;
-        match crate::managed_agents::store_journal::insert_outbox_event(
-            &journal,
-            &event_id,
-            &pub_op_id,
-            raw_json.as_bytes(),
-        )? {
-            InsertEventOutcome::Inserted | InsertEventOutcome::ExactDuplicate => {}
-            InsertEventOutcome::IdentityCollision => {
-                return Err(format!(
-                    "agent-tombstone: outbox identity collision on event {event_id}"
-                ));
-            }
-        }
 
-        // Retention row after outbox evidence.
+        // Delete the existing retention row, then use prepare_publication to
+        // atomically insert outbox evidence + new tombstone retention row.
         let conn = open_retention_db(&scope.db_path)?;
         delete_retained_event(&conn, KIND_MANAGED_AGENT, &owner_pubkey, agent_pubkey)?;
-        retain_event(
+        crate::managed_agents::store_journal::prepare_publication(
+            &journal,
             &conn,
-            &RetainedEvent {
-                kind: KIND_DELETE,
-                pubkey: owner_pubkey,
-                d_tag,
-                content: event.content.to_string(),
-                created_at: event.created_at.as_secs() as i64,
-                raw_event: raw_json,
-                pending_sync: true,
-            },
+            &pub_op_id,
+            &event_id,
+            &raw_json,
+            KIND_DELETE,
+            &owner_pubkey,
+            &d_tag,
+            &event.content,
+            event.created_at.as_secs() as i64,
         )
     })();
     if let Err(e) = result {
@@ -231,7 +212,7 @@ pub(crate) fn build_agent_archive_request(
 /// request stops the agent's `kind:0` and channel memberships appearing in
 /// member pickers. Called inside the lock-held delete body. Best-effort.
 pub(crate) fn archive_managed_agent_pending(app: &AppHandle, state: &AppState, agent_pubkey: &str) {
-    use crate::managed_agents::retention::{open_retention_db, retain_event, RetainedEvent};
+    use crate::managed_agents::retention::open_retention_db;
     use buzz_core_pkg::kind::KIND_IA_ARCHIVE_REQUEST;
     use nostr::JsonUtil;
 
@@ -242,7 +223,6 @@ pub(crate) fn archive_managed_agent_pending(app: &AppHandle, state: &AppState, a
         let event_id = event.id.to_hex();
         let raw_json = event.as_json();
 
-        // Outbox evidence first.
         let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
         std::fs::create_dir_all(&anchor)
             .map_err(|e| format!("create anchor dir for archive outbox: {e}"))?;
@@ -255,34 +235,20 @@ pub(crate) fn archive_managed_agent_pending(app: &AppHandle, state: &AppState, a
             agent_pubkey,
             crate::managed_agents::store_journal::Generation::zero(),
         )?;
-        use crate::managed_agents::store_journal::InsertEventOutcome;
-        match crate::managed_agents::store_journal::insert_outbox_event(
-            &journal,
-            &event_id,
-            &pub_op_id,
-            raw_json.as_bytes(),
-        )? {
-            InsertEventOutcome::Inserted | InsertEventOutcome::ExactDuplicate => {}
-            InsertEventOutcome::IdentityCollision => {
-                return Err(format!(
-                    "agent-archive: outbox identity collision on event {event_id}"
-                ));
-            }
-        }
 
-        // Retention row after outbox evidence.
+        // prepare_publication: outbox evidence first, then retention row.
         let conn = open_retention_db(&scope.db_path)?;
-        retain_event(
+        crate::managed_agents::store_journal::prepare_publication(
+            &journal,
             &conn,
-            &RetainedEvent {
-                kind: KIND_IA_ARCHIVE_REQUEST,
-                pubkey: owner_pubkey,
-                d_tag: agent_pubkey.to_string(),
-                content: event.content.to_string(),
-                created_at: event.created_at.as_secs() as i64,
-                raw_event: raw_json,
-                pending_sync: true,
-            },
+            &pub_op_id,
+            &event_id,
+            &raw_json,
+            KIND_IA_ARCHIVE_REQUEST,
+            &owner_pubkey,
+            agent_pubkey,
+            &event.content,
+            event.created_at.as_secs() as i64,
         )
     })();
     if let Err(e) = result {

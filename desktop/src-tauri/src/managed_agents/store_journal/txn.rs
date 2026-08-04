@@ -187,14 +187,10 @@ where
 
         // Write both staged files and fsync before COMMIT.  If staging fails,
         // roll back the transaction so the journal stays consistent.
-        stage_file(&agents_stage, &agents_payload).map_err(|e| {
-            // tx rolls back on drop
-            e
-        })?;
-        stage_file(&teams_stage, &teams_payload).map_err(|e| {
+        stage_file(&agents_stage, &agents_payload)?;
+        stage_file(&teams_stage, &teams_payload).inspect_err(|_| {
             // agents stage file written but no COMMIT — clean up best-effort
             let _ = std::fs::remove_file(&agents_stage);
-            e
         })?;
 
         // Insert the file-commit intent row.  This is the durable record that
@@ -377,15 +373,49 @@ where
 pub fn run_boot_recovery(app: &AppHandle) -> Result<(), String> {
     let anchor = store_anchor_dir(app)?;
     std::fs::create_dir_all(&anchor).map_err(|e| format!("boot-recovery create anchor: {e}"))?;
-    run_boot_recovery_at(&anchor)
+    // Derive the retention DB path from the anchor so recovery can re-insert
+    // missing retention rows without needing to go through the full AppState.
+    let retention_db_path = anchor.join("retention.db");
+    let retention_path = if retention_db_path.exists() {
+        Some(retention_db_path)
+    } else {
+        None
+    };
+    run_boot_recovery_at(&anchor, retention_path.as_deref())
 }
 
 /// Path-level boot recovery, extracted so tests can call it without an AppHandle.
-pub(crate) fn run_boot_recovery_at(anchor: &std::path::Path) -> Result<(), String> {
+///
+/// `retention_db_path` is the path to the anchor's `retention.db` file.  When
+/// `Some`, recovery can re-insert missing `pending_sync` retention rows from
+/// journal outbox payloads so the flush loop can re-publish them.  When `None`,
+/// recovery logs the gap and leaves the outbox row pending for the next boot.
+pub(crate) fn run_boot_recovery_at(
+    anchor: &std::path::Path,
+    retention_db_path: Option<&std::path::Path>,
+) -> Result<(), String> {
     let journal = open_journal(anchor)?;
     recover_interrupted_file_commits(&journal)?;
-    recover_nonterminal_operations(&journal)?;
+    recover_nonterminal_operations(&journal, retention_db_path)?;
     Ok(())
+}
+
+/// Strip the `.stage` suffix from a stage path to derive the canonical path.
+///
+/// Stage files are named `<canonical>.stage` (e.g. `managed-agents.json.stage`).
+/// `PathBuf::with_extension("json")` would produce `managed-agents.json.json`
+/// because it replaces only the last extension.  Instead, strip the literal
+/// `.stage` suffix from the file-name string.
+fn strip_stage_suffix(stage: &Path) -> std::path::PathBuf {
+    let file_name = stage
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let canonical_name = file_name.strip_suffix(".stage").unwrap_or(file_name);
+    stage
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(canonical_name)
 }
 
 /// Recover any interrupted two-phase file commits from `file_commit_phases`.
@@ -430,9 +460,9 @@ fn recover_interrupted_file_commits(journal: &rusqlite::Connection) -> Result<()
         match phase {
             FileCommitPhase::Intent => {
                 // Both stage files should exist; replay both renames.
-                // Derive canonical paths by stripping the ".stage" extension.
+                // Derive canonical paths by stripping the ".stage" suffix.
                 if agents_stage.exists() {
-                    let canonical = agents_stage.with_extension("json");
+                    let canonical = strip_stage_suffix(&agents_stage);
                     if let Err(e) = rename_staged(&agents_stage, &canonical) {
                         eprintln!("buzz-desktop: boot-recovery: agents rename failed: {e}");
                         continue;
@@ -447,7 +477,7 @@ fn recover_interrupted_file_commits(journal: &rusqlite::Connection) -> Result<()
                 }
                 // Fall through to replay teams rename.
                 if teams_stage.exists() {
-                    let canonical = teams_stage.with_extension("json");
+                    let canonical = strip_stage_suffix(&teams_stage);
                     if let Err(e) = rename_staged(&teams_stage, &canonical) {
                         eprintln!("buzz-desktop: boot-recovery: teams rename failed: {e}");
                         continue;
@@ -470,7 +500,7 @@ fn recover_interrupted_file_commits(journal: &rusqlite::Connection) -> Result<()
             FileCommitPhase::FirstRenamed => {
                 // Agents already renamed; only teams stage remains.
                 if teams_stage.exists() {
-                    let canonical = teams_stage.with_extension("json");
+                    let canonical = strip_stage_suffix(&teams_stage);
                     if let Err(e) = rename_staged(&teams_stage, &canonical) {
                         eprintln!(
                             "buzz-desktop: boot-recovery: teams rename (first_renamed) failed: {e}"
@@ -505,7 +535,10 @@ fn recover_interrupted_file_commits(journal: &rusqlite::Connection) -> Result<()
 /// is absent (team retain wrote journal-only evidence), insert a
 /// `pending_sync` retention row from the immutable outbox payload so the
 /// flush loop can re-publish it.
-fn recover_nonterminal_operations(journal: &rusqlite::Connection) -> Result<(), String> {
+fn recover_nonterminal_operations(
+    journal: &rusqlite::Connection,
+    retention_db_path: Option<&std::path::Path>,
+) -> Result<(), String> {
     let nonterminal = read_nonterminal_operations(journal)?;
     if nonterminal.is_empty() {
         return Ok(());
@@ -574,7 +607,9 @@ fn recover_nonterminal_operations(journal: &rusqlite::Connection) -> Result<(), 
                 //
                 // Best-effort: a retention failure here is logged; the outbox
                 // row remains pending for the next boot.
-                if let Err(e) = ensure_retention_row_for_payload(payload, event_id) {
+                if let Err(e) =
+                    ensure_retention_row_for_payload(payload, event_id, retention_db_path)
+                {
                     eprintln!(
                         "buzz-desktop: boot-recovery: could not ensure retention row for \
                          event {event_id}: {e}"
@@ -610,10 +645,16 @@ fn recover_nonterminal_operations(journal: &rusqlite::Connection) -> Result<(), 
 /// publish the event even when the retention row was never written (e.g. the
 /// process crashed between the journal COMMIT and the `retain_event` call).
 ///
-/// The payload is the immutable raw Nostr event JSON.  We parse it minimally
-/// to extract the fields the retention table needs.  Parsing failure is not
-/// fatal — the next boot will retry via the outbox row.
-fn ensure_retention_row_for_payload(payload: &[u8], event_id: &str) -> Result<(), String> {
+/// When `retention_db_path` is `Some`, parses the Nostr event and inserts a
+/// `pending_sync` row.  When `None` (first-boot before the retention DB
+/// exists, or test paths without AppHandle), logs a diagnostic and returns
+/// `Ok` — the next boot that runs with a live retention DB will call
+/// `run_event_sync` / `reconcile_agents_to_events` and re-queue the row.
+fn ensure_retention_row_for_payload(
+    payload: &[u8],
+    event_id: &str,
+    retention_db_path: Option<&std::path::Path>,
+) -> Result<(), String> {
     use nostr::JsonUtil;
 
     let event = nostr::Event::from_json(
@@ -621,30 +662,49 @@ fn ensure_retention_row_for_payload(payload: &[u8], event_id: &str) -> Result<()
     )
     .map_err(|e| format!("parse outbox payload event {event_id}: {e}"))?;
 
-    // We need a retention DB path.  For recovery we use the same anchor we
-    // already have open.  However, `ensure_retention_row_for_payload` is called
-    // from within `recover_nonterminal_operations` which holds the journal
-    // connection but not an AppHandle or retention db path.  We cannot call
-    // `active_retention_scope` without an AppHandle.
-    //
-    // Design decision: recovery that needs to re-insert a retention row must
-    // pass the retention db path in.  For the current call site (boot recovery
-    // without AppHandle) we cannot reconstruct the per-(relay,owner) path.
-    //
-    // Resolution: log the gap and return Ok — the flush loop will re-read all
-    // `pending_sync` retention rows and any row that was already there will be
-    // re-published.  The only case we fail is "no retention row AND journal
-    // outbox row present" — that means the crash was between journal COMMIT and
-    // `retain_event`.  In that case we surface the pending outbox row in the
-    // recovery log; the next LIVE boot (with AppHandle) will call
-    // `run_event_sync` → `reconcile_agents_to_events` which re-inserts the row.
-    //
-    // This is acceptable at-least-once: the worst outcome is that one boot
-    // sees the agent as "not yet published" and reconcile re-queues it.
-    let _ = event; // referenced above to parse; unused after design note
+    let Some(db_path) = retention_db_path else {
+        // No retention DB path available (e.g. pre-existing DB or test context).
+        // Log and return Ok — next live boot will reconcile.
+        eprintln!(
+            "buzz-desktop: boot-recovery: outbox event {event_id} has pending payload \
+             (kind={}) — no retention DB path, will be re-queued by reconcile on next boot",
+            event.kind
+        );
+        return Ok(());
+    };
+
+    // Open the retention DB and insert a pending_sync row for this event.
+    let conn = crate::managed_agents::retention::open_retention_db(db_path)
+        .map_err(|e| format!("boot-recovery: open retention db: {e}"))?;
+
+    // Extract the d-tag from the event (required for the retention coordinate).
+    let d_tag = event
+        .tags
+        .iter()
+        .find(|t| t.kind() == nostr::TagKind::d())
+        .and_then(|t| t.content())
+        .unwrap_or("")
+        .to_string();
+
+    let owner_pubkey = event.pubkey.to_hex();
+
+    crate::managed_agents::retention::retain_event(
+        &conn,
+        &crate::managed_agents::retention::RetainedEvent {
+            kind: event.kind.as_u16() as u32,
+            pubkey: owner_pubkey,
+            d_tag,
+            content: event.content.to_string(),
+            created_at: event.created_at.as_secs() as i64,
+            raw_event: event.as_json(),
+            pending_sync: true,
+        },
+    )
+    .map_err(|e| format!("boot-recovery: insert retention row for {event_id}: {e}"))?;
+
     eprintln!(
-        "buzz-desktop: boot-recovery: outbox event {event_id} has pending payload \
-         (kind={}) — will be re-driven on next flush tick via reconcile",
+        "buzz-desktop: boot-recovery: re-inserted retention row for outbox event {event_id} \
+         (kind={})",
         event.kind
     );
     Ok(())
@@ -666,7 +726,7 @@ fn ensure_retention_row_for_payload(payload: &[u8], event_id: &str) -> Result<()
 ///
 /// Callers that do NOT need a new outbox row (e.g. no content change) call
 /// `retain_agent_record` directly and skip this function.
-#[allow(dead_code)] // B1 publication authority — wired to snapshot import in B1.1
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_publication(
     journal: &rusqlite::Connection,
     retention_conn: &rusqlite::Connection,
