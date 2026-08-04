@@ -8897,9 +8897,9 @@ async function handleSendManagedAgentChannelMessage(
 
 /**
  * Mock the `delete_message` Tauri command. Removes the event from the
- * in-memory mock store and records the kind:5 structural event that the real
- * command publishes so both channel-cache and Inbox structural refresh paths
- * observe the deletion.
+ * in-memory mock store and records the kind:5 structural event used by Inbox
+ * refreshes. Do not emit it live: mock target IDs may fail the production
+ * 64-hex deletion filter, letting a live merge restore the flattened row.
  */
 function handleDeleteMessage(
   args: {
@@ -8924,7 +8924,6 @@ function handleDeleteMessage(
     getMockMemberPubkey(config),
   );
   recordMockMessage(args.channelId, deletion);
-  emitMockLiveEvent(args.channelId, deletion);
 }
 
 /**
