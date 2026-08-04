@@ -237,6 +237,7 @@ import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot.ts";
 // Real storage functions — the test uses them, not a replica.
 import {
   clearAllDrafts,
+  deleteDraftEntry,
   initDraftStore,
   loadDraftEntry,
   persistDraftEntry,
@@ -645,4 +646,19 @@ test("draft_lifecycle_preserves_local_files_across_a_b_a_switch", async () => {
   );
 
   await handle.unmount();
+});
+
+test("discarding_a_draft_drops_its_retained_local_files", () => {
+  const retainedFile = {
+    file: new File(["private"], "private.pdf", {
+      type: "application/pdf",
+    }),
+    id: 8,
+    spoilered: false,
+  };
+
+  saveQueuedAttachmentsForDraft("chan-deleted", [retainedFile]);
+  deleteDraftEntry("chan-deleted");
+
+  assert.deepEqual(takeQueuedAttachmentsForDraft("chan-deleted"), []);
 });

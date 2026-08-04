@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { discardQueuedAttachmentsForDraft } from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
 import { setLocalStorageItemWithRecovery } from "@/shared/lib/localStorageQuota";
 
@@ -294,6 +295,11 @@ export function saveDraftEntry(draftKey: string, draft: DraftState): void {
 
 export function loadDraftEntry(draftKey: string): DraftState | undefined {
   return readStore().get(draftKey);
+}
+
+export function deleteDraftEntry(draftKey: string): void {
+  discardQueuedAttachmentsForDraft(draftKey);
+  clearDraftEntry(draftKey);
 }
 
 export function clearDraftEntry(draftKey: string): void {

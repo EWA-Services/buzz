@@ -322,6 +322,11 @@ export function saveQueuedAttachmentsForDraft(
   queuedAttachmentsByDraftKey.set(draftKey, attachments);
 }
 
+/** Remove local files retained for a draft without restoring them. */
+export function discardQueuedAttachmentsForDraft(draftKey: string): void {
+  queuedAttachmentsByDraftKey.delete(draftKey);
+}
+
 /** Return and remove the local files retained for a recovered draft. */
 export function takeQueuedAttachmentsForDraft(
   draftKey: string,
