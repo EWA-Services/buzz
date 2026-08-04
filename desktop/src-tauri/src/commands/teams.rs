@@ -28,16 +28,15 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 
 /// Retain a freshly authored team event in the local store, flagged for relay
 /// sync. Called inside a command's `managed_agents_store_lock`-held body after
-/// `save_teams`; the background flush loop publishes it out-of-band.
+/// saving teams; the background flush loop publishes it out-of-band.
 ///
 /// Mirrors `commands::personas::retain_persona_pending`. Built-in teams are not
 /// owner-authored, so the caller skips them — this helper assumes the team is
-/// publishable. Best-effort: a failure here is logged and swallowed so a
-/// retention hiccup never blocks the disk-authoritative write.
+/// publishable.
 ///
-/// Unlike `retain_managed_agent_pending`, this has no projection-equality
-/// short-circuit: teams have no start/stop runtime churn, so a republish only
-/// happens on an actual user edit. The guard is intentionally omitted.
+/// Internal ordering: outbox journal evidence is written **before** the
+/// retention row is flushable.  Best-effort at the outer boundary: a failure
+/// is logged and swallowed so a hiccup never blocks the disk-authoritative write.
 pub(super) fn retain_team_pending(app: &AppHandle, state: &AppState, team: &TeamRecord) {
     use crate::managed_agents::{
         persona_events::monotonic_created_at,
@@ -61,8 +60,8 @@ pub(super) fn retain_team_pending(app: &AppHandle, state: &AppState, team: &Team
         let event_id = event.id.to_hex();
         let raw_json = event.as_json();
 
-        // B1 journal outbox: record the immutable event identity before
-        // the retention DB entry is flushed to the relay.
+        // B1 journal outbox: record the immutable event identity BEFORE
+        // the retention DB entry is set flushable.
         let anchor = crate::managed_agents::store_journal::store_anchor_dir(app)?;
         std::fs::create_dir_all(&anchor)
             .map_err(|e| format!("create anchor dir for team outbox: {e}"))?;
@@ -75,13 +74,22 @@ pub(super) fn retain_team_pending(app: &AppHandle, state: &AppState, team: &Team
             &team.id,
             crate::managed_agents::store_journal::Generation::zero(),
         )?;
-        crate::managed_agents::store_journal::insert_outbox_event(
+        use crate::managed_agents::store_journal::InsertEventOutcome;
+        match crate::managed_agents::store_journal::insert_outbox_event(
             &journal,
             &event_id,
             &pub_op_id,
             raw_json.as_bytes(),
-        )?;
+        )? {
+            InsertEventOutcome::Inserted | InsertEventOutcome::ExactDuplicate => {}
+            InsertEventOutcome::IdentityCollision => {
+                return Err(format!(
+                    "team-retain: outbox identity collision on event {event_id}"
+                ));
+            }
+        }
 
+        // Retention row after outbox evidence.
         retain_event(
             &conn,
             &RetainedEvent {

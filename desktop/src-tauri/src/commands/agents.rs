@@ -788,19 +788,38 @@ pub async fn create_managed_agent(
                     &pubkey_for_closure,
                     crate::managed_agents::store_journal::Generation::zero(),
                 )?;
-                // Generation CAS: zero → one (new key).
-                crate::managed_agents::store_journal::cas_generation(
+                // Generation CAS: zero → one (new key).  Reject tombstoned keys
+                // to prevent ABA resurrection of a deleted agent identity.
+                match crate::managed_agents::store_journal::cas_generation(
                     journal,
                     &pubkey_for_closure,
                     crate::managed_agents::store_journal::Generation::zero(),
-                )?;
+                )? {
+                    crate::managed_agents::store_journal::CasOutcome::Committed { .. } => {}
+                    crate::managed_agents::store_journal::CasOutcome::Tombstoned {
+                        tombstone_generation,
+                    } => {
+                        return Err(format!(
+                            "agent {pubkey_for_closure} pubkey is tombstoned at generation \
+                             {} — cannot recreate a deleted identity",
+                            tombstone_generation.0
+                        ));
+                    }
+                    crate::managed_agents::store_journal::CasOutcome::Conflict { current } => {
+                        return Err(format!(
+                            "agent {pubkey_for_closure} generation conflict: expected 0, \
+                             current is {} — stale writer or duplicate key",
+                            current.0
+                        ));
+                    }
+                }
                 // Add the new agent instance.
                 instances.push(record);
                 Ok((instances, (op_id_for_closure,)))
             })?;
 
-        // After save: advance operation to committed.
-        crate::managed_agents::store_journal::advance_to_committed(&app, &op_id_out);
+        // The create op stays Pending until its outbox event is published by
+        // the flush loop and boot recovery advances it to Committed.
 
         // Re-read the saved record for the response.
         let records = load_managed_agents(&app)?;

@@ -83,13 +83,38 @@ pub(super) fn apply_journal_schema(conn: &Connection) -> Result<(), String> {
             payload      BLOB NOT NULL,
             received_at  INTEGER NOT NULL
         );
+
+        -- Two-phase file-commit record.
+        --
+        -- Written inside the same SQLite transaction as operation/generation
+        -- mutations. Tracks the progression of a mutate_store call through
+        -- its three file-commit phases so boot recovery can determine how far
+        -- a crashed commit progressed and finish or compensate it.
+        --
+        -- phase:
+        --   'intent'         - journal transaction committed; staged files
+        --                      written + fsynced; no rename has occurred.
+        --   'first_renamed'  - managed-agents.json.stage renamed to canonical.
+        --   'committed'      - teams.json.stage renamed to canonical; complete.
+        --
+        -- agents_stage_path / teams_stage_path name the temp files written
+        -- before rename. Recovery checks for them to decide what remains to do.
+        CREATE TABLE IF NOT EXISTS file_commit_phases (
+            commit_id         TEXT NOT NULL PRIMARY KEY,
+            operation_id      TEXT NOT NULL,
+            phase             TEXT NOT NULL DEFAULT 'intent',
+            agents_stage_path TEXT NOT NULL,
+            teams_stage_path  TEXT NOT NULL,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL
+        );
         ",
     )
     .map_err(|e| format!("apply journal schema: {e}"))?;
 
     // Set schema version via PRAGMA user_version (authoritative singleton,
     // never duplicated).
-    conn.pragma_update(None, "user_version", 1)
+    conn.pragma_update(None, "user_version", 2)
         .map_err(|e| format!("set schema user_version: {e}"))?;
 
     Ok(())

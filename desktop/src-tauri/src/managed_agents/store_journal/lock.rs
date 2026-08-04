@@ -70,9 +70,27 @@ impl JournalLockGuard {
                     windows_sys::Win32::System::Threading::INFINITE,
                 )
             };
-            if wait != 0 {
+            // WAIT_OBJECT_0 (0x00) — acquired normally.
+            // WAIT_ABANDONED (0x80) — prior holder crashed; mutex ownership
+            //   transferred to us.  The journal may be in an intermediate state;
+            //   boot recovery will repair it.  Treating this as a failure would
+            //   permanently deadlock on a crashed-holder scenario — the exact
+            //   case this substrate exists to handle.
+            // WAIT_FAILED (0xFFFFFFFF) or any other value — genuine error.
+            const WAIT_OBJECT_0: u32 = 0x00000000;
+            const WAIT_ABANDONED: u32 = 0x00000080;
+            if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+                let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
                 unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-                return Err(format!("WaitForSingleObject failed: {wait}"));
+                return Err(format!(
+                    "WaitForSingleObject failed: wait={wait:#010x} last_error={err}"
+                ));
+            }
+            if wait == WAIT_ABANDONED {
+                eprintln!(
+                    "buzz-desktop: journal lock: acquired abandoned mutex — \
+                     prior holder crashed, boot recovery will repair state"
+                );
             }
             return Ok(JournalLockGuard {
                 mutex_handle: handle,

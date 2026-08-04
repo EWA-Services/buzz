@@ -37,21 +37,29 @@ pub(crate) fn reconcile_agents_to_events(
     keys: &nostr::Keys,
     db_path: &Path,
 ) {
-    let Ok(base_dir) = super::managed_agents_base_dir(app) else {
-        return;
+    // Use the anchor dir for both lock and file path (fail-closed on lock failure).
+    let anchor = match super::store_journal::store_anchor_dir(app) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("buzz-desktop: agent-event-reconcile: anchor resolution failed: {e}");
+            return;
+        }
     };
 
-    // Acquire the B1 advisory lock so this read-only pass is serialised
-    // against concurrent writers from other processes.  Best-effort: a lock
-    // failure is logged and falls through to the read, which is safe because
-    // the lock is advisory (cooperating-process protection only).
-    let _advisory = crate::managed_agents::store_journal::store_anchor_dir(app)
-        .ok()
-        .and_then(|anchor| {
-            crate::managed_agents::store_journal::JournalLockGuard::acquire(&anchor).ok()
-        });
+    // Acquire the B1 advisory lock. Fail-closed: skip the reconcile if we
+    // cannot acquire the lock rather than reading stale/wrong-path files.
+    let _advisory = match super::store_journal::JournalLockGuard::acquire(&anchor) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!(
+                "buzz-desktop: agent-event-reconcile: advisory lock failed — \
+                 skipping reconcile: {e}"
+            );
+            return;
+        }
+    };
 
-    match reconcile_agents_in_dir_at(&base_dir, keys, db_path) {
+    match reconcile_agents_in_dir_at(&anchor, keys, db_path) {
         Ok(0) => {}
         Ok(reconciled) => {
             eprintln!(

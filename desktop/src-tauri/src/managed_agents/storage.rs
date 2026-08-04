@@ -382,7 +382,11 @@ fn hydrate_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) 
 
 /// Atomically mutate the **instance** half of the agent store via a closure,
 /// holding the OS advisory lock across fresh-decode → mutation → write.
-/// `mutation` receives hydrated instances; definition half is preserved.
+/// `mutation` receives instances WITHOUT keyring hydration (keys stay as-is
+/// from JSON — the closure works with the raw records and must not call
+/// keyring APIs).  After the file write the advisory lock is released and
+/// THEN keyring operations run outside all critical sections.
+///
 /// Returns `(T, guard)` so post-write work can run inside the in-process lock.
 pub fn mutate_agent_store<'g, F, T>(
     app: &AppHandle,
@@ -396,14 +400,15 @@ where
     ) -> Result<(Vec<ManagedAgentRecord>, T), String>,
 {
     crate::managed_agents::store_journal::mutate_store(app, store_mutex_guard, move |st| {
-        let mut instances: Vec<ManagedAgentRecord> = st
+        // Present instances to the closure WITHOUT keyring hydration: keyring
+        // I/O is prohibited inside the critical section.  The closure is
+        // responsible for not calling hydrate_keys or persist_agent_keys.
+        let instances: Vec<ManagedAgentRecord> = st
             .agents
             .iter()
             .filter(|r| !r.pubkey.is_empty())
             .cloned()
             .collect();
-        // Hydrate keys from keyring before presenting to the caller.
-        hydrate_keys(&mut instances);
 
         let defs: Vec<ManagedAgentRecord> = st
             .agents
@@ -414,8 +419,7 @@ where
 
         let (mut new_instances, result) = mutation(instances, st.journal)?;
 
-        // Persist keys to keyring with journal pre-image recording; sort.
-        persist_agent_keys_journaled(&mut new_instances, st.journal);
+        // Sort instances (no keyring I/O here — keys stay as-is from mutation).
         new_instances.sort_by(|a, b| {
             a.name
                 .to_lowercase()
@@ -507,6 +511,7 @@ fn persist_agent_keys(records: &mut [ManagedAgentRecord]) {
 /// to `Failed` and the key stays inline.  Best-effort: a journal error must
 /// never block the actual keyring write — if the journal record fails we fall
 /// back to the unwrapped path and log the hiccup.
+#[allow(dead_code)] // B1 keyring-journal protocol — wired to compensation phase in B1.1
 fn persist_agent_keys_journaled(
     records: &mut [ManagedAgentRecord],
     journal: &rusqlite::Connection,

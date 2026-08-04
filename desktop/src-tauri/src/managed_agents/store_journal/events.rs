@@ -78,6 +78,7 @@ pub fn mark_outbox_published(
 }
 
 /// Insert an immutable inbox row.  Fail-closed on identity collision.
+#[allow(dead_code)] // B1 substrate — used in compensation and recovery paths
 pub fn insert_inbox_event(
     conn: &Connection,
     event_id: &str,
@@ -136,6 +137,7 @@ pub fn read_outbox_events(
 }
 
 /// Read inbox events for `operation_id`.
+#[allow(dead_code)] // B1 substrate — used in recovery path tests and compensation
 pub fn read_inbox_events(
     conn: &Connection,
     operation_id: &str,

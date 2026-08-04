@@ -9,6 +9,8 @@ use buzz_core_pkg::kind::{event_is_shared, KIND_PERSONA};
 use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
+use rusqlite::OptionalExtension;
+
 use super::{AgentDefinition, ManagedAgentRecord};
 use crate::app_state::AppState;
 
@@ -353,10 +355,45 @@ async fn flush_pending_events_at(
         if let Some(app) = app {
             if let Ok(anchor) = crate::managed_agents::store_journal::store_anchor_dir(app) {
                 if let Ok(journal) = crate::managed_agents::store_journal::open_journal(&anchor) {
-                    let _ = crate::managed_agents::store_journal::mark_outbox_published(
+                    let marked = crate::managed_agents::store_journal::mark_outbox_published(
                         &journal, &event_id, 0, // pending → published
                         1,
-                    );
+                    )
+                    .unwrap_or(false);
+
+                    // If the outbox row advanced, try to advance its owning
+                    // operation to Committed: check whether all outbox rows for
+                    // that op are now published, then do the disposition CAS.
+                    if marked {
+                        if let Ok(Some(op_id)) = journal
+                            .query_row(
+                                "SELECT operation_id FROM outbox_events WHERE event_id = ?1",
+                                rusqlite::params![event_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()
+                        {
+                            use crate::managed_agents::store_journal::advance_disposition;
+                            use crate::managed_agents::store_journal::Disposition;
+                            // Advance only if all sibling outbox events are published.
+                            let pending_siblings: i64 = journal
+                                .query_row(
+                                    "SELECT COUNT(*) FROM outbox_events
+                                 WHERE operation_id = ?1 AND published_state = 0",
+                                    rusqlite::params![op_id],
+                                    |row| row.get(0),
+                                )
+                                .unwrap_or(1);
+                            if pending_siblings == 0 {
+                                let _ = advance_disposition(
+                                    &journal,
+                                    &op_id,
+                                    &Disposition::Pending,
+                                    &Disposition::Committed,
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
