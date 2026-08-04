@@ -241,6 +241,10 @@ import {
   loadDraftEntry,
   persistDraftEntry,
 } from "../lib/useDrafts.ts";
+import {
+  saveQueuedAttachmentsForDraft,
+  takeQueuedAttachmentsForDraft,
+} from "../lib/backgroundMediaUploadStore.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -576,6 +580,69 @@ test("draft_lifecycle_empty_target_clears_stale_mention_refs", async () => {
   assert.deepEqual(activeRefs, []);
   assert.equal(editorContent, "");
   assert.equal(loadDraftEntry("chan-empty"), undefined);
+
+  await handle.unmount();
+});
+
+test("draft_lifecycle_preserves_local_files_across_a_b_a_switch", async () => {
+  setupStore("pubkey-switch-files");
+  const FILE_A = {
+    file: new File(["report"], "report.pdf", { type: "application/pdf" }),
+    id: 7,
+    spoilered: false,
+  };
+  let draftKey = "chan-a";
+  let editorContent = "";
+  let queuedAttachments = [];
+  const spoileredRef = { current: new Set() };
+
+  function HarnessComposer() {
+    useDraftPersistLifecycle({
+      effectiveDraftKey: draftKey,
+      channelId: draftKey,
+      loadDraft: loadDraftEntry,
+      persistDraft: persistDraftEntry,
+      getMentionRefs: () => [],
+      restoreMentionRefs: () => {},
+      livePendingImeta: [],
+      setPendingImeta: () => {},
+      getQueuedAttachments: () => queuedAttachments,
+      saveQueuedAttachmentsForDraft,
+      clearQueuedAttachments: () => {
+        queuedAttachments = [];
+      },
+      restoreQueuedAttachments: (attachments) => {
+        queuedAttachments = attachments;
+      },
+      takeQueuedAttachmentsForDraft,
+      setContent: (content) => {
+        editorContent = content;
+      },
+      clearContent: () => {
+        editorContent = "";
+      },
+      setSpoileredAttachmentUrls: () => {},
+      spoileredAttachmentUrlsRef: spoileredRef,
+      syncComposerContentFromEditor: () => editorContent,
+    });
+    return null;
+  }
+
+  saveQueuedAttachmentsForDraft("chan-a", [FILE_A]);
+  const handle = await mountStrictMode(HarnessComposer);
+  assert.equal(queuedAttachments[0]?.file.name, "report.pdf");
+
+  draftKey = "chan-b";
+  await handle.rerender();
+  assert.deepEqual(queuedAttachments, [], "B must not inherit A's local files");
+
+  draftKey = "chan-a";
+  await handle.rerender();
+  assert.equal(
+    queuedAttachments[0]?.file.name,
+    "report.pdf",
+    "A's attachment-only draft survives a full A → B → A switch",
+  );
 
   await handle.unmount();
 });

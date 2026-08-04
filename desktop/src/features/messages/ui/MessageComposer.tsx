@@ -19,6 +19,7 @@ import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditi
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import {
   cancelBackgroundMediaUploads,
+  saveQueuedAttachmentsForDraft,
   takeQueuedAttachmentsForDraft,
   useBackgroundMediaUpload,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
@@ -163,6 +164,8 @@ function MessageComposerImpl({
     restoreMentionRefs: mentions.restoreDraftMentionRefs,
     livePendingImeta: media.pendingImeta,
     setPendingImeta: media.setPendingImeta,
+    getQueuedAttachments: () => media.queuedAttachmentsRef.current,
+    saveQueuedAttachmentsForDraft,
     clearQueuedAttachments: media.clearQueuedAttachments,
     restoreQueuedAttachments: media.restoreQueuedAttachments,
     takeQueuedAttachmentsForDraft,
@@ -258,7 +261,6 @@ function MessageComposerImpl({
       channelLinks.updateChannelQuery(text, cursor);
       emojiAutocomplete.updateEmojiQuery(text, cursor);
       persistentMentionHydrationRef.current?.reconcile(text);
-
       if (text.trim().length > 0) {
         notifyTyping();
       }
@@ -631,7 +633,6 @@ function MessageComposerImpl({
   // runs, preventing re-fire on re-render or back-navigation.
   const onAutoSubmitCompleteRef = React.useRef(onAutoSubmitComplete);
   onAutoSubmitCompleteRef.current = onAutoSubmitComplete;
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally fires once on mount only
   React.useEffect(() => {
     if (
@@ -661,7 +662,6 @@ function MessageComposerImpl({
     },
     [submitMessage],
   );
-
   // ── Keyboard handling ───────────────────────────────────────────────
   // Tiptap handles formatting shortcuts (⌘B, ⌘I, etc.) natively.
   // Plain Enter → submit is now handled inside the Tiptap `submitOnEnter`
@@ -677,7 +677,6 @@ function MessageComposerImpl({
         }
         return;
       }
-
       const channelResult = channelLinks.handleChannelKeyDown(event);
       if (channelResult.handled) {
         if (channelResult.suggestion) {
@@ -685,7 +684,6 @@ function MessageComposerImpl({
         }
         return;
       }
-
       const { handled, suggestion } = mentions.handleMentionKeyDown(event);
       if (handled) {
         if (suggestion) {
@@ -693,7 +691,6 @@ function MessageComposerImpl({
         }
         return;
       }
-
       if (event.key === "Tab" && !event.shiftKey && linkEditor.isCardOpen) {
         event.preventDefault();
         if (!linkEditor.focusCardFirstControl()) {

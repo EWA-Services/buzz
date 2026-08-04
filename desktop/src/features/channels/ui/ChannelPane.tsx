@@ -64,12 +64,10 @@ import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
 import { channelChrome } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
-
 const HUDDLE_TRANSCRIPT_ROOT_STYLE = {
   "--buzz-channel-content-top-padding": "0rem",
   "--channel-top-chrome-height": "0.25rem",
 } as React.CSSProperties;
-
 export const ChannelPane = React.memo(function ChannelPane({
   activeChannel,
   agentPubkeys,
@@ -253,7 +251,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     clearWelcomeComposerDismissTimer,
     isActiveWelcomeChannel,
   ]);
-
   const isEditInThread =
     editTarget != null &&
     threadHeadMessage != null &&
@@ -281,7 +278,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     },
     [onEdit, currentPubkey],
   );
-
   const handleEditLastOwnMainMessage = React.useCallback((): boolean => {
     const target = findLastOwnEditable(messages);
     if (!target || !onEdit) return false;

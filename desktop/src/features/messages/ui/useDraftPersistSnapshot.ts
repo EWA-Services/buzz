@@ -29,6 +29,13 @@ type UseDraftPersistLifecycleParams = {
   livePendingImeta: ImetaMedia[];
   /** Async setter for pendingImeta — called after the synchronous snapshot. */
   setPendingImeta: (imeta: ImetaMedia[]) => void;
+  /** Snapshot the local files owned by the outgoing draft key. */
+  getQueuedAttachments?: () => QueuedMediaAttachment[];
+  /** Retain local files in memory under their draft key. */
+  saveQueuedAttachmentsForDraft?: (
+    draftKey: string,
+    attachments: QueuedMediaAttachment[],
+  ) => void;
   /** Local files cannot be persisted, so clear them at a draft-key boundary. */
   clearQueuedAttachments?: () => void;
   /** Restore local files retained while a deferred upload was off-channel. */
@@ -87,6 +94,8 @@ export function useDraftPersistLifecycle({
   restoreMentionRefs,
   livePendingImeta,
   setPendingImeta,
+  getQueuedAttachments,
+  saveQueuedAttachmentsForDraft,
   clearQueuedAttachments,
   restoreQueuedAttachments,
   takeQueuedAttachmentsForDraft,
@@ -115,8 +124,8 @@ export function useDraftPersistLifecycle({
     // already reflects the incoming channel, which would corrupt the outgoing
     // draft's channelId metadata.
 
-    // Files cannot be serialized into the draft store. Dropping the in-memory
-    // queue here prevents it from being sent in the next channel or thread.
+    // Files cannot be serialized into localStorage. Replace the outgoing
+    // queue (retained by the cleanup below) with the incoming draft's queue.
     clearQueuedAttachments?.();
     if (effectiveDraftKey !== restoredQueuedAttachmentsDraftKeyRef.current) {
       restoredQueuedAttachmentsDraftKeyRef.current = effectiveDraftKey ?? null;
@@ -147,6 +156,10 @@ export function useDraftPersistLifecycle({
 
     return () => {
       if (effectiveDraftKey) {
+        const queuedAttachments = getQueuedAttachments?.() ?? [];
+        if (queuedAttachments.length > 0) {
+          saveQueuedAttachmentsForDraft?.(effectiveDraftKey, queuedAttachments);
+        }
         const content = syncComposerContentFromEditor();
         persistDraft(
           effectiveDraftKey,

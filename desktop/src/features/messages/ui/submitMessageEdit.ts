@@ -18,7 +18,7 @@ type EditDraft = {
   spoileredAttachmentUrls: Set<string>;
 };
 
-type SubmitMessageEditOptions = EditDraft & {
+type SubmitMessageEditOptions = Omit<EditDraft, "mentionRefs"> & {
   clearComposer: () => void;
   customEmoji: ReadonlyArray<CustomEmoji>;
   extractMentionPubkeys: (content: string) => string[];

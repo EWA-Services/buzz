@@ -1,6 +1,5 @@
 import * as React from "react";
 import { toast } from "sonner";
-
 import {
   type CreateChannelManagedAgentInput,
   useAttachManagedAgentToChannelMutation,
@@ -43,7 +42,6 @@ import {
   type SendMessageWithMentionFlowInput,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
-
 type UseMentionSendFlowOptions = {
   channelId: string | null;
   channelLinks: Pick<UseChannelLinksResult, "clearChannels">;
