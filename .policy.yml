@@ -61,3 +61,4 @@ approval_rules:
           statuses:
             - Validate PR Title and Description
             - ai-assistance-disclosure / AI Label Check
+            - pre-commit-check
