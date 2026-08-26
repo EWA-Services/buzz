@@ -65,9 +65,9 @@ approval_rules:
     requires:
       count: 2
       teams:
-        - EWA-Services/dev-backend
-        - EWA-Services/dev-client
-        - EWA-Services/dev-infrastructure
+        - EWA-Services/engineering-backend
+        - EWA-Services/engineering-frontend
+        - EWA-Services/engineering-platform
       conditions:
         has_valid_signatures: true
         has_status:
