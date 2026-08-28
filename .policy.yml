@@ -42,7 +42,9 @@ approval_rules:
       conditions:
         has_valid_signatures: true
   - name: engineering review pool approval
-    description: Requires 2 approvals from backend, client, or infrastructure teams for all PRs to main
+    description: >-
+      Requires 2 approvals from Backend Engineering, Data Engineering, Frontend Engineering,
+      Platform Engineering, or Engineering Leads for all PRs to main
     if:
       targets_branch:
         pattern: ^(main|master|develop)$
@@ -65,8 +67,11 @@ approval_rules:
     requires:
       count: 2
       teams:
+        - EWA-Services/data-engineering
         - EWA-Services/engineering-backend
+        - EWA-Services/engineering-data
         - EWA-Services/engineering-frontend
+        - EWA-Services/engineering-leads
         - EWA-Services/engineering-platform
       conditions:
         has_valid_signatures: true
