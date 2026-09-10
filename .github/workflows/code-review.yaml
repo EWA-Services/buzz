@@ -31,12 +31,12 @@ on:
       codex_model:
         description: Codex model to use for direct CLI runs
         required: true
-        default: gpt-5.6-sol
+        default: gpt-6-astra
         type: string
       codex_reasoning_effort:
         description: Codex reasoning effort for direct CLI runs (none|low|medium|high|xhigh)
         required: true
-        default: xhigh
+        default: high
         type: string
 
 permissions: {}
@@ -69,8 +69,8 @@ jobs:
       ai_review_override_approvers: >-
         ${{ vars.AI_REVIEW_OVERRIDE_APPROVERS || 'jai' }}
       codex_version: ${{ inputs.codex_version || 'latest' }}
-      codex_model: ${{ inputs.codex_model || 'gpt-5.6-sol' }}
-      codex_reasoning_effort: ${{ inputs.codex_reasoning_effort || 'xhigh' }}
+      codex_model: ${{ inputs.codex_model || 'gpt-6-astra' }}
+      codex_reasoning_effort: ${{ inputs.codex_reasoning_effort || 'high' }}
       dispatch_command: >-
         ${{ github.event.client_payload.slash_command.command || '' }}
       dispatch_issue_state: >-
@@ -80,6 +80,8 @@ jobs:
       dispatch_previous_body: >-
         ${{ github.event.client_payload.github.payload.changes.body.from || '' }}
     secrets:
+      AI_REVIEW_TELEMETRY_SUPABASE_URL: ${{ secrets.AI_REVIEW_TELEMETRY_SUPABASE_URL }}
+      AI_REVIEW_TELEMETRY_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.AI_REVIEW_TELEMETRY_SUPABASE_SERVICE_ROLE_KEY }}
       FINN_DEVOPS_PERSONAL_ACCESS_TOKEN: ${{ secrets.FINN_DEVOPS_PERSONAL_ACCESS_TOKEN }}
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
       CODEX_AUTH_ALERT_WEBHOOK_URL: ${{ secrets.CODEX_AUTH_ALERT_WEBHOOK_URL }}
