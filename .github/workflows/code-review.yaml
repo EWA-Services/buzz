@@ -11,6 +11,10 @@ on:
       - ai-review-breaker-reset-command
       - ai-review-override-command
       - review-command
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
   pull_request:
     types:
       - opened
@@ -44,9 +48,13 @@ permissions: {}
 jobs:
   code-review:
     if: >-
-      github.event_name != 'repository_dispatch' ||
-      (github.actor == 'finn-devops' &&
-      github.event.client_payload.github.payload.issue.state == 'open')
+      (github.event_name != 'repository_dispatch' ||
+        (github.actor == 'finn-devops' &&
+        github.event.client_payload.github.payload.issue.state == 'open')) &&
+      ((github.event_name != 'issue_comment' && github.event_name != 'pull_request_review_comment') ||
+        (github.event.comment.user.type != 'Bot' &&
+        contains(github.event.comment.body, '@finn-codex') &&
+        (github.event.issue.pull_request || github.event.pull_request)))
     uses: EWA-Services/EWA-Actions/.github/workflows/shareable-code-review.yaml@main
     permissions:
       actions: write
