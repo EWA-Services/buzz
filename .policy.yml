@@ -63,7 +63,8 @@ approval_rules:
       invalidate_on_push: false
       request_review:
         enabled: true
-        mode: teams
+        # Use requires.count to avoid requesting every eligible team.
+        mode: random-users
     requires:
       count: 2
       teams:
