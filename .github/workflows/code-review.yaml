@@ -63,7 +63,8 @@ jobs:
       issues: write
       pull-requests: write
     with:
-      actions_ref: main
+      # A manual dispatch in this repository runs that commit's scripts, so a pipeline fix can be reviewed before it is on main. Every other caller keeps main.
+      actions_ref: ${{ github.repository == 'EWA-Services/EWA-Actions' && github.event_name == 'workflow_dispatch' && github.sha || 'main' }}
       pr_number: >-
         ${{ github.event.client_payload.github.payload.issue.number ||
             inputs.pr_number || '' }}
@@ -94,6 +95,7 @@ jobs:
       LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CODEX_AUTH_ALERT_WEBHOOK_URL: ${{ secrets.CODEX_AUTH_ALERT_WEBHOOK_URL }}
       FINN_AI_CODER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FINN_AI_CODER_GITHUB_APP_PRIVATE_KEY }}
 # yamllint enable rule:line-length
