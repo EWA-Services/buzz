@@ -13,15 +13,47 @@ on:
       - synchronize
   issue_comment:
     types: [created]
-  pull_request_review:
-    types: [submitted]
-  pull_request_review_comment:
-    types: [created]
+  # Runs only from the default-branch workflow file and fires for every completed
+  # check run; the job filter below keeps only the finn-ai-coder review check.
+  check_run:
+    types: [completed]
 
 permissions: {}
 
 jobs:
   metadata-gate:
+    # check_run fires for every app's check runs, and issue_comment fires for
+    # every comment. Skip all but the AI review check and AI review comments
+    # before calling the reusable workflow, which applies the exact rules.
+    if: >-
+      ${{
+        github.event_name == 'pull_request' ||
+        (
+          github.event_name == 'check_run' &&
+          github.event.check_run.name == 'finn-ai-coder / review' &&
+          github.event.check_run.app.slug == 'finn-ai-coder'
+        ) ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          github.actor != 'finn-ai-coder[bot]' &&
+          (
+            contains(github.event.comment.body, 'direct-cli-review:codex') ||
+            contains(github.event.comment.body, 'finn-ai-coder-review-metadata') ||
+            contains(github.event.comment.body, 'Codex Review') ||
+            (
+              github.actor == 'finn-codex' &&
+              (
+                contains(github.event.comment.body, 'Review posted on PR') ||
+                contains(github.event.comment.body, 'What I checked') ||
+                contains(github.event.comment.body, 'Inline comments added') ||
+                contains(github.event.comment.body, 'inline PR review comment') ||
+                contains(github.event.comment.body, 'I posted this as an inline')
+              )
+            )
+          )
+        )
+      }}
     uses: EWA-Services/EWA-Actions/.github/workflows/shareable-pr-metadata-gate.yaml@main
     permissions:
       actions: write
