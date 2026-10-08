@@ -18,6 +18,13 @@ permissions: {}
 
 jobs:
   ai-assistance-disclosure:
+    # The check reads only the ai-assisted and not-ai-assisted labels, so other
+    # label changes skip it. The skip is on this caller job on purpose: a skipped
+    # caller reports the check name `ai-assistance-disclosure`, not the required
+    # `ai-assistance-disclosure / AI Label Check`, so PolicyBot keeps the last result.
+    if: >-
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      contains(fromJSON('["ai-assisted", "not-ai-assisted"]'), github.event.label.name)
     uses: EWA-Services/EWA-Actions/.github/workflows/shareable-ai-label-check.yml@main
     permissions:
       contents: read
