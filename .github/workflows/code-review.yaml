@@ -10,6 +10,7 @@ on:
     types:
       - ai-review-breaker-reset-command
       - ai-review-override-command
+      - full-review-command
       - review-command
   issue_comment:
     types: [created]
@@ -96,6 +97,7 @@ jobs:
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_2 }}
       CODEX_AUTH_ALERT_WEBHOOK_URL: ${{ secrets.CODEX_AUTH_ALERT_WEBHOOK_URL }}
       FINN_AI_CODER_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FINN_AI_CODER_GITHUB_APP_PRIVATE_KEY }}
 # yamllint enable rule:line-length

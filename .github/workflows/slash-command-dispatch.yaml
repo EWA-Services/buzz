@@ -22,6 +22,7 @@ jobs:
           commands: |
             ai-review-breaker-reset
             ai-review-override
+            full-review
             growthbook-override
             no-experiment
             pr-size-override
