@@ -1,0 +1,27 @@
+# This file is synchronized from EWA-Services/EWA-Actions
+# Do not modify this file directly, all changes will be lost/overwritten
+---
+version: 1
+
+merge:
+  trigger:
+    labels: [automerge]
+
+  method: squash
+
+  options:
+    squash:
+      title: pull_request_title
+      body: pull_request_body
+
+  delete_after_merge: true
+
+  # Our EWA-Services/bulldozer fork reads GitHub Rulesets natively, so the
+  # blind-merge fallback for ruleset-protected repos is no longer needed.
+  # Upstream issue: https://github.com/palantir/bulldozer/issues/617
+  allow_merge_with_no_checks: false
+
+# Auto Rebase is off org-wide; bulldozer merges main into behind automerge PRs (GitHub signs these merge commits).
+update:
+  trigger:
+    labels: [automerge]
