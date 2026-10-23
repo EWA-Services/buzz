@@ -1,10 +1,14 @@
-# This file is synchronized from EWA-Services/EWA-Actions
-# Do not modify this file directly, all changes will be lost/overwritten
 ---
 # Policy Bot configuration for General Engineering repositories
 # These repositories contain important code requiring consistent review standards
 policy:
   approval:
+    - CI docker.yml
+    - CI sprig-image.yml
+    - CI helm-chart.yml
+    - CI push-gateway-helm-chart.yml
+    - CI benchmark-harbor.yml
+    - Repository CI
     - or:
         - finn-devops bypass no review required
         - engineering review pool approval
@@ -86,3 +90,111 @@ approval_rules:
           conclusions: [success, skipped]
           workflows:
             - .github/workflows/pr-size-gate.yaml
+
+  - name: CI docker.yml
+    if:
+      targets_branch:
+        pattern: ^(main)$
+      changed_files:
+        paths:
+          - ^Dockerfile$
+          - ^Dockerfile\.push\-gateway$
+          - ^\.dockerignore$
+          - ^\.github/workflows/docker\.yml$
+          - ^Cargo\.toml$
+          - ^Cargo\.lock$
+          - ^rust\-toolchain\.toml$
+          - ^crates/.*$
+          - ^web/.*$
+          - ^package\.json$
+          - ^pnpm\-lock\.yaml$
+          - ^pnpm\-workspace\.yaml$
+          - ^patches/.*$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/docker.yml
+  - name: CI sprig-image.yml
+    if:
+      targets_branch:
+        pattern: ^(main)$
+      changed_files:
+        paths:
+          - ^Dockerfile\.sprig$
+          - ^scripts/sprig\-entrypoint\.sh$
+          - ^\.github/workflows/sprig\-image\.yml$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/sprig-image.yml
+  - name: CI helm-chart.yml
+    if:
+      targets_branch:
+        pattern: ^(main)$
+      changed_files:
+        paths:
+          - ^deploy/charts/buzz/.*$
+          - ^deploy/charts/buzz\-push\-gateway/.*$
+          - ^\.github/workflows/helm\-chart\.yml$
+          - ^ct\.yaml$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/helm-chart.yml
+  - name: CI push-gateway-helm-chart.yml
+    if:
+      targets_branch:
+        pattern: ^(main)$
+      changed_files:
+        paths:
+          - ^deploy/charts/buzz\-push\-gateway/.*$
+          - ^\.github/workflows/push\-gateway\-helm\-chart\.yml$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/push-gateway-helm-chart.yml
+  - name: CI benchmark-harbor.yml
+    if:
+      targets_branch:
+        pattern: ^(main)$
+      changed_files:
+        paths:
+          - ^benchmarks/harbor\-buzz\-orchestra/.*$
+          - ^\.github/workflows/benchmark\-harbor\.yml$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/benchmark-harbor.yml
+  - name: Repository CI
+    if:
+      targets_branch:
+        pattern: ^(main)$
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          conclusions:
+            - success
+          workflows:
+            - .github/workflows/ci.yml
+            - .github/workflows/desktop-release-candidate.yml
