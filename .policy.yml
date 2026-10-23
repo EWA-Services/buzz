@@ -1,6 +1,6 @@
 ---
 # Policy Bot configuration for General Engineering repositories
-# These repositories contain important code requiring consistent review standards
+# These repositories require consistent review standards
 policy:
   approval:
     - CI docker.yml
@@ -19,7 +19,8 @@ policy:
 
 approval_rules:
   - name: Jai or Poom approval for PR size workflow changes
-    description: Require Jai or Poom to approve changes to the PR size enforcement workflow
+    description: >-
+      Require Jai or Poom to approve changes to the PR size enforcement workflow
     if:
       changed_files:
         paths:
@@ -47,7 +48,8 @@ approval_rules:
         has_valid_signatures: true
   - name: engineering review pool approval
     description: >-
-      Requires 2 approvals from Backend Engineering, Data Engineering, Frontend Engineering,
+      Requires 2 approvals from Backend Engineering, Data Engineering,
+      Frontend Engineering,
       Platform Engineering, or Engineering Leads for all PRs to main
     if:
       targets_branch:
