@@ -20,7 +20,7 @@ permissions: {}
 jobs:
   validate-pr-title-and-description:
     name: Validate PR Title and Description
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: finn-runners
     permissions:
       contents: read
       issues: write

@@ -13,7 +13,7 @@ permissions:
 jobs:
   rebase:
     if: ${{ !startsWith(github.event.client_payload.pull_request.head.ref, 'sync_workflow_files') }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: finn-runners
     steps:
       - name: Setup GPG for signed commits
         uses: EWA-Services/EWA-Actions/.github/actions/verified-commit@main
